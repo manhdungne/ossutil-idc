@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
@@ -3040,7 +3041,7 @@ func isS3URL(u CloudURL) bool {
 }
 
 func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(cc.command.ctx)
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -3059,7 +3060,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(ossBucket *oss.Bucket, srcBucket,
 		return err
 	}
 
-	_, err = cli.PutObject(cc.command.ctx, &s3.PutObjectInput{
+	_, err = cli.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(dstBucket),
 		Key: aws.String(dstKey),
 		Body: rc,
@@ -3073,7 +3074,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
 		return err
 	}
 
-	initOut, err := cli.CreateMultipartUpload(cc.command.ctx, &s3.CreateMultipartUploadInput{
+	initOut, err := cli.CreateMultipartUpload(context.Background(), &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(dstBucket),
 		Key: aws.String(dstKey),
 	})
@@ -3104,11 +3105,11 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
 			return err
 		}
 
-		upOut, upErr := cli.UploadPart(cc.command.ctx, &s3.UploadPartInput{
+		upOut, upErr := cli.UploadPart(context.Background(), &s3.UploadPartInput{
 			Bucket: aws.String(dstBucket),
 			Key: aws.String(dstKey),
-			UploadID: aws.String(uploadId),
-			partNumber: PartNumber,
+			UploadId: aws.String(uploadID),
+			PartNumber: partNumber,
 			Body: rc,
 			ContentLength: end - offset + 1,
 		})
@@ -3126,7 +3127,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
         offset = end + 1
 	}
 
-	_, err = cli.CompleteMultipartUpload(cc.command.ctx, &s3.CompleteMultipartUploadInput{
+	_, err = cli.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
         Bucket:   aws.String(dstBucket),
         Key:      aws.String(dstKey),
         UploadId: aws.String(uploadID),
@@ -3138,7 +3139,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
 }
 
 func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
-    _, err := cli.AbortMultipartUpload(cc.command.ctx, &s3.AbortMultipartUploadInput{
+    _, err := cli.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
         Bucket:   aws.String(bucket),
         Key:      aws.String(key),
         UploadId: aws.String(uploadID),
