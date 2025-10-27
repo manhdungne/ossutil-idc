@@ -10,4 +10,8 @@ require (
 	golang.org/x/crypto v0.17.0
 	golang.org/x/time v0.0.0-20220722155302-e5dcc9cfc0b9 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
+
+	github.com/aws/aws-sdk-go-v2 v1.30.0
+	github.com/aws/aws-sdk-go-v2/config v1.27.15
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.58.1
 )

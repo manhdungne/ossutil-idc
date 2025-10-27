@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"os"
@@ -15,6 +16,11 @@ import (
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
 	leveldb "github.com/syndtr/goleveldb/leveldb"
+
+	aws "github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type operationType int
@@ -3009,6 +3015,13 @@ func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoT
 		return skip, err, size, msg
 	}
 
+	if isS3URL(destURL) {
+		if size < cc.cpOption.threshold {
+			return false, cc.bridgeCopyOSS2S3_Stream(bucket, srcURL.bucket, srcObject, destURL.bucket, destObject), size, msg
+		}
+		return false, cc.bridgeCopyOSS2S3_Multipart(bucket, srcURL.bucket, srcObject, size, destURL.bucket, destObject), size, msg
+	}
+
 	if size < cc.cpOption.threshold {
 		return false, cc.ossCopyObjectRetry(bucket, srcObject, destURL.bucket, destObject), size, msg
 	}
@@ -3019,6 +3032,118 @@ func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoT
 	options := cc.cpOption.options
 	options = append(options, oss.Routines(rt), cp, oss.Progress(listener), oss.MetadataDirective(oss.MetaReplace))
 	return false, cc.ossResumeCopyRetry(srcURL.bucket, srcObject, destURL.bucket, destObject, partSize, options...), 0, msg
+}
+
+func isS3URL(u CloudURL) bool {
+	s := u.ToString()
+	return strings.HasPrefix(s, "s3://") || strings.HasPrefix(strings.ToLower(s), "s3://")
+}
+
+func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(cc.command.ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s3.NewFromConfig(cfg), nil
+}
+
+func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(ossBucket *oss.Bucket, srcBucket, srcKey, dstBucket, dstKey string) error {
+	rc, err := ossBucket.GetObject(srcKey)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	cli, err := cc.newS3Client()
+	if err != nil {
+		return err
+	}
+
+	_, err = cli.PutObject(cc.command.ctx, &s3.PutObjectInput{
+		Bucket: aws.String(dstBucket),
+		Key: aws.String(dstKey),
+		Body: rc,
+	})
+	return err
+}
+
+func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBucket, srcKey string, size int64, dstBucket, dstKey string) error {
+	cli, err := cc.newS3Client()
+	if err != nil {
+		return err
+	}
+
+	initOut, err := cli.CreateMultipartUpload(cc.command.ctx, &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(dstBucket),
+		Key: aws.String(dstKey),
+	})
+	if err != nil {
+		return err
+	}
+	uploadID := aws.ToString(initOut.UploadId)
+
+	partSize, _ := cc.preparePartOption(size)
+	if partSize <= 0 {
+		partSize = 8 * 1024 * 1024
+	}
+
+	var (
+		completedParts []s3types.CompletedPart 
+		partNumber int32 = 1
+		offset int64 = 0
+	)
+
+	for offset < size {
+		end := offset + partSize - 1
+		if end >= size {
+			end = size -1 
+		}
+		rc, err := ossBucket.GetObject(srcKey, oss.Range(offset, end))
+		if err != nil {
+			_ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+			return err
+		}
+
+		upOut, upErr := cli.UploadPart(cc.command.ctx, &s3.UploadPartInput{
+			Bucket: aws.String(dstBucket),
+			Key: aws.String(dstKey),
+			UploadID: aws.String(uploadId),
+			partNumber: PartNumber,
+			Body: rc,
+			ContentLength: end - offset + 1,
+		})
+
+		rc.Close()
+        if upErr != nil {
+            _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+            return upErr
+        }
+        completedParts = append(completedParts, s3types.CompletedPart{
+            ETag:       upOut.ETag,
+            PartNumber: aws.Int32(partNumber),
+        })
+        partNumber++
+        offset = end + 1
+	}
+
+	_, err = cli.CompleteMultipartUpload(cc.command.ctx, &s3.CompleteMultipartUploadInput{
+        Bucket:   aws.String(dstBucket),
+        Key:      aws.String(dstKey),
+        UploadId: aws.String(uploadID),
+        MultipartUpload: &s3types.CompletedMultipartUpload{
+            Parts: completedParts,
+        },
+    })
+    return err
+}
+
+func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
+    _, err := cli.AbortMultipartUpload(cc.command.ctx, &s3.AbortMultipartUploadInput{
+        Bucket:   aws.String(bucket),
+        Key:      aws.String(key),
+        UploadId: aws.String(uploadID),
+    })
+    return err
 }
 
 func (cc *CopyCommand) makeCopyObjectName(srcRelativeObject, destObject string) string {
