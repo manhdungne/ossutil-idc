@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io/ioutil"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -3109,9 +3108,9 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
 			Bucket: aws.String(dstBucket),
 			Key: aws.String(dstKey),
 			UploadId: aws.String(uploadID),
-			PartNumber: partNumber,
+			PartNumber: aws.Int32(partNumber),
 			Body: rc,
-			ContentLength: end - offset + 1,
+			ContentLength: aws.Int64(end - offset + 1),
 		})
 
 		rc.Close()
