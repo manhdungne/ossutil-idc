@@ -1,7 +1,7 @@
 package lib
 
 import (
-	"error"
+	"errors"
 	"path"
 	"context"
 	"fmt"
