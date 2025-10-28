@@ -3002,14 +3002,17 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 
     if srcPrefix == destPrefix {
         if cc.cpOption.meta == "" {
-            return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta", srcURL.ToString(), destURL.ToString())
+            return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta",
+                cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
         }
     } else if cc.cpOption.recursive {
         if strings.HasPrefix(destPrefix, srcPrefix) {
-            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed (recursive copy)", destURL.ToString(), srcURL.ToString())
+            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursively copy should be avoided",
+                cc.urlStringFor(destURL, true), cc.urlStringFor(srcURL, false))
         }
         if strings.HasPrefix(srcPrefix, destPrefix) {
-            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed (overwrite source)", srcURL.ToString(), destURL.ToString())
+            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recover source object should be avoided",
+                cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
         }
     }
     return nil
@@ -3411,4 +3414,15 @@ func (cc *CopyCommand) forceCopyIfS3Dest(opType operationType) operationType {
         return operationTypeCopy
     }
     return opType
+}
+
+func (cc *CopyCommand) urlStringFor(u CloudURL, isDest bool) string {
+    if isDest && cc.cpOption.destIsS3 {
+        if u.object != "" {
+            return fmt.Sprintf("s3://%s/%s", u.bucket, u.object)
+        }
+        return fmt.Sprintf("s3://%s", u.bucket)
+    }
+    // Mặc định: giữ cách in của ossutil
+    return u.ToString()
 }
