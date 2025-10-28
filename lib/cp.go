@@ -2989,11 +2989,11 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 		return nil
 	}
 
-	s3 := true
+	isS3Dest := true
 	srcPrefix := srcURL.object
 	destPrefix := destURL.object
 	
-	if srcPrefix == destPrefix & !s3 {
+	if srcPrefix == destPrefix && !isS3Dest {
 		if cc.cpOption.meta == "" {
 			return fmt.Errorf("\"%s\" and \"%s\" are [MARK-A] the same, copy self will do nothing, set meta please use --meta options ", srcURL.ToString(), destURL)
 		}
