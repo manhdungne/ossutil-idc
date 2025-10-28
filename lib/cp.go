@@ -2995,7 +2995,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 	
 	if srcPrefix == destPrefix & !s3 {
 		if cc.cpOption.meta == "" {
-			return fmt.Errorf("\"%s\" and \"%s\" are [MARK-D] the same, copy self will do nothing, set meta please use --meta options ", srcURL.ToString(), destURL)
+			return fmt.Errorf("\"%s\" and \"%s\" are [MARK-A] the same, copy self will do nothing, set meta please use --meta options ", srcURL.ToString(), destURL)
 		}
 	} else if cc.cpOption.recursive {
 		if strings.HasPrefix(destPrefix, srcPrefix) {
