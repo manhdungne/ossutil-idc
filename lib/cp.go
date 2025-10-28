@@ -2995,7 +2995,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
         fmt.Printf("[DEBUG] destURL '%s' không phải là S3\n", destURL.String())
 	if srcPrefix == destPrefix && !strings.HasPrefix(destURL.String(), "s3://"){
 		if cc.cpOption.meta == "" {
-			return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta options", srcURL.ToString(), srcURL.ToString())
+			return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta options", srcURL.ToString(), destURL.ToString())
 		}
 	} else if cc.cpOption.recursive {
 		if strings.HasPrefix(destPrefix, srcPrefix) {
