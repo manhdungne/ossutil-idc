@@ -2990,7 +2990,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 	}
 	srcPrefix := srcURL.object
 	destPrefix := destURL.object
-	
+	fmt.Println("[BUILD] 2025-10-28 18:05 +0700")
 	return nil
 }
 
