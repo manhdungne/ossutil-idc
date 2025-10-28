@@ -2990,9 +2990,9 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
         return err
     }
     // Nếu đích là S3, bỏ qua các rule tự đệ quy bucket giống nhau của OSS
-    // if cc.cpOption.destIsS3 {
-    //     return nil
-    // }
+    if cc.cpOption.destIsS3 {
+        return nil
+    }
 
     if srcURL.bucket != destURL.bucket {
         return nil
@@ -3001,21 +3001,21 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
     srcPrefix := srcURL.object
     destPrefix := destURL.object
 
-    // if srcPrefix == destPrefix && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false){
-    //     if cc.cpOption.meta == "" {
-    //         return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta",
-    //             cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
-    //     }
-    // } else if cc.cpOption.recursive && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false) {
-    //     if strings.HasPrefix(destPrefix, srcPrefix) {
-    //         return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursively copy should be avoided",
-    //             cc.urlStringFor(destURL, true), cc.urlStringFor(srcURL, false))
-    //     }
-    //     if strings.HasPrefix(srcPrefix, destPrefix) {
-    //         return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recover source object should be avoided",
-    //             cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
-    //     }
-    // }
+    if srcPrefix == destPrefix && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false) && !destIsS3() {
+        if cc.cpOption.meta == "" {
+            return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta",
+                cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
+        }
+    } else if cc.cpOption.recursive && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false) && !destIsS3() {
+        if strings.HasPrefix(destPrefix, srcPrefix) {
+            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursively copy should be avoided",
+                cc.urlStringFor(destURL, true), cc.urlStringFor(srcURL, false))
+        }
+        if strings.HasPrefix(srcPrefix, destPrefix) {
+            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recover source object should be avoided",
+                cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
+        }
+    }
     return nil
 }
 
