@@ -1407,28 +1407,31 @@ func (cc *CopyCommand) RunCommand() error {
 		return err
 	}
 
+
 	LogInfo("[DEBUG] Raw dest arg: %s", cc.command.args[len(cc.command.args)-1])
 	LogInfo("[DEBUG] Parsed destURL type: Cloud=%t File=%t", destURL.IsCloudURL(), destURL.IsFileURL())
 
 	if newDest, changed, err := cc.coerceS3DestIfNeeded(destURL); err != nil {
 		LogError("[DEBUG] coerceS3DestIfNeeded error: %v", err)
-    	return err
+		return err
 	} else if changed {
 		LogInfo("[DEBUG] coerceS3DestIfNeeded: destURL converted to CloudURL (S3)")
 		destURL = newDest
 	} else {
-    LogInfo("[DEBUG] coerceS3DestIfNeeded: no change (destIsS3=%t)", cc.cpOption.destIsS3)
+		LogInfo("[DEBUG] coerceS3DestIfNeeded: no change (destIsS3=%t)", cc.cpOption.destIsS3)
 	}
+
 
 	opType := cc.getCommandType(srcURLList, destURL)
 	oldOp := opType
 	LogInfo("[DEBUG] Initial opType: %d (0=PUT, 1=GET, 2=COPY)", opType)
 	opType = cc.forceCopyIfS3Dest(opType)
 	if opType != oldOp {
-    	LogInfo("[DEBUG] forceCopyIfS3Dest: changed opType from %d → %d", oldOp, opType)
+		LogInfo("[DEBUG] forceCopyIfS3Dest: changed opType from %d → %d", oldOp, opType)
 	} else {
 		LogInfo("[DEBUG] forceCopyIfS3Dest: no change (destIsS3=%t)", cc.cpOption.destIsS3)
 	}
+
 	if err := cc.checkCopyArgs(srcURLList, destURL, opType); err != nil {
 		LogError("[DEBUG] checkCopyArgs failed: %v", err)
 		return err
@@ -2982,31 +2985,36 @@ func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
 }
 
 func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
-	if err := destURL.checkObjectPrefix(); err != nil {
-		return err
-	}
-	if srcURL.bucket != destURL.bucket {
-		return nil
-	}
+    if err := destURL.checkObjectPrefix(); err != nil {
+        return err
+    }
+    // Nếu đích là S3, bỏ qua các rule tự đệ quy bucket giống nhau của OSS
+    if cc.cpOption.destIsS3 {
+        return nil
+    }
 
-	isS3Dest := true
-	srcPrefix := srcURL.object
-	destPrefix := destURL.object
-	
-	if srcPrefix == destPrefix && !isS3Dest {
-		if cc.cpOption.meta == "" {
-			return fmt.Errorf("\"%s\" and \"%s\" are [MARK-A] the same, copy self will do nothing, set meta please use --meta options ", srcURL.ToString(), destURL)
-		}
-	} else if cc.cpOption.recursive && !isS3Dest {
-		if strings.HasPrefix(destPrefix, srcPrefix) {
-			return fmt.Errorf("[MARK-C] \"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided ", destURL.ToString(), srcURL.ToString())
-		}
-		if strings.HasPrefix(srcPrefix, destPrefix) {
-			return fmt.Errorf("[MARK-B] \"%s\" include \"%s\", it's not allowed, recover source object should be avoided", srcURL.ToString(), destURL.ToString())
-		}
-	}
-	return nil
+    if srcURL.bucket != destURL.bucket {
+        return nil
+    }
+
+    srcPrefix := srcURL.object
+    destPrefix := destURL.object
+
+    if srcPrefix == destPrefix {
+        if cc.cpOption.meta == "" {
+            return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta", srcURL.ToString(), destURL)
+        }
+    } else if cc.cpOption.recursive {
+        if strings.HasPrefix(destPrefix, srcPrefix) {
+            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed (recursive copy)", destURL.ToString(), srcURL.ToString())
+        }
+        if strings.HasPrefix(srcPrefix, destPrefix) {
+            return fmt.Errorf("\"%s\" include \"%s\", it's not allowed (overwrite source)", srcURL.ToString(), destURL.ToString())
+        }
+    }
+    return nil
 }
+
 
 func (cc *CopyCommand) copySingleFileWithReport(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) error {
 	skip, err, size, msg := cc.copySingleFile(bucket, objectInfo, srcURL, destURL)
@@ -3037,34 +3045,33 @@ func (cc *CopyCommand) adjustRelativeKeyForDup(srcRelative, srcPrefix, destPrefi
 }
 
 func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) (bool, error, int64, string) {
-    //make object name
     srcObject := objectInfo.prefix + objectInfo.relativeKey
-    //destObject := cc.makeCopyObjectName(objectInfo.relativeKey, destURL.object)
     size := objectInfo.size
     srct := objectInfo.lastModified
 
-	adjustedRel := cc.adjustRelativeKeyForDup(objectInfo.relativeKey, srcURL.object, destURL.object)
-	destObject := cc.makeCopyObjectName(adjustedRel, destURL.object)
+    // Tránh duplicate khi copy prefix → prefix
+    adjustedRel := cc.adjustRelativeKeyForDup(objectInfo.relativeKey, srcURL.object, destURL.object)
+    destObject := cc.makeCopyObjectName(adjustedRel, destURL.object)
 
     msg := fmt.Sprintf("%s %s to %s", opCopy, CloudURLToString(srcURL.bucket, srcObject), CloudURLToString(destURL.bucket, destObject))
 
-    //get object size
+    // Lấy size/mtime nếu chưa có
     if size < 0 {
         statOptions := cc.cpOption.payerOptions
         if cc.cpOption.versionId != "" {
             statOptions = append(statOptions, oss.VersionId(cc.cpOption.versionId))
         }
-
         props, err := cc.command.ossGetObjectStatRetry(bucket, srcObject, statOptions...)
         if err != nil {
             return false, err, size, msg
         }
-        size, err = strconv.ParseInt(props.Get(oss.HTTPHeaderContentLength), 10, 64)
-        if err != nil {
-            return false, err, size, msg
+        var err2 error
+        size, err2 = strconv.ParseInt(props.Get(oss.HTTPHeaderContentLength), 10, 64)
+        if err2 != nil {
+            return false, err2, size, msg
         }
-        if srct, err = time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); err != nil {
-            return false, err, size, msg
+        if srct, err2 = time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); err2 != nil {
+            return false, err2, size, msg
         }
     }
 
@@ -3072,7 +3079,7 @@ func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoT
         return skip, err, size, msg
     }
 
-    // *** DÙNG CỜ THAY CHO isS3URL(destURL) ***
+    // ĐÍCH S3 → dùng bridge
     if cc.cpOption.destIsS3 {
         if size < cc.cpOption.threshold {
             return false, cc.bridgeCopyOSS2S3_Stream(bucket, srcURL.bucket, srcObject, destURL.bucket, destObject), size, msg
@@ -3080,10 +3087,10 @@ func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoT
         return false, cc.bridgeCopyOSS2S3_Multipart(bucket, srcURL.bucket, srcObject, size, destURL.bucket, destObject), size, msg
     }
 
+    // ĐÍCH OSS thường
     if size < cc.cpOption.threshold {
         return false, cc.ossCopyObjectRetry(bucket, srcObject, destURL.bucket, destObject), size, msg
     }
-
     var listener *OssResumeProgressListener = &OssResumeProgressListener{&cc.monitor, 0, 0, false, false}
     partSize, rt := cc.preparePartOption(size)
     cp := oss.CheckpointDir(true, cc.cpOption.cpDir)
@@ -3093,13 +3100,13 @@ func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoT
 }
 
 
+
 func isS3URL(u CloudURL) bool {
-	s := u.ToString()
-	return strings.HasPrefix(s, "s3://") || strings.HasPrefix(strings.ToLower(s), "s3://")
+    s := u.ToString()
+    return strings.HasPrefix(s, "s3://") || strings.HasPrefix(strings.ToLower(s), "s3://")
 }
 
 func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
-    // Region: lấy từ --region hoặc env, thiếu thì us-east-1 (RGW/MinIO thường ổn)
     region, _ := GetString(OptionRegion, cc.command.options)
     cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
     if err != nil {
@@ -3109,10 +3116,6 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
         cfg.Region = "us-east-1"
     }
 
-    // Chỉ cấu hình CHO S3 từ ENV RIÊNG, tránh đụng OSS:
-    //   S3_ENDPOINT=http://vcos.cloudstorage.com.vn
-    //   S3_PATH_STYLE=1  (bật path-style)
-    // (Không dùng OptionEndpoint ở đây để khỏi ảnh hưởng OSS)
     var s3Opts []func(*s3.Options)
     if ep := os.Getenv("S3_ENDPOINT"); ep != "" {
         s3Opts = append(s3Opts, func(o *s3.Options) { o.BaseEndpoint = aws.String(ep) })
@@ -3130,38 +3133,42 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
 }
 
 
+
+func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
+    _, err := cli.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
+        Bucket:   aws.String(bucket),
+        Key:      aws.String(key),
+        UploadId: aws.String(uploadID),
+    })
+    return err
+}
+
 func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(ossBucket *oss.Bucket, srcBucket, srcKey, dstBucket, dstKey string) error {
-    // Lấy object từ OSS
     rc, err := ossBucket.GetObject(srcKey)
     if err != nil {
         return err
     }
     defer rc.Close()
 
-    // Đọc toàn bộ vào RAM để có io.ReadSeeker (SDK S3 cần seek khi retry)
     buf, err := ioutil.ReadAll(rc)
     if err != nil {
         return err
     }
     body := bytes.NewReader(buf)
 
-    // Tạo S3 client
     cli, err := cc.newS3Client()
     if err != nil {
         return err
     }
 
-    // Gửi PutObject với ContentLength để tránh SDK cố đo lại
     _, err = cli.PutObject(context.Background(), &s3.PutObjectInput{
         Bucket:        aws.String(dstBucket),
         Key:           aws.String(dstKey),
-        Body:          body,                          // io.ReadSeeker
-        ContentLength: aws.Int64(int64(len(buf))),    // quan trọng
-        // ContentType: aws.String("application/octet-stream"), // tùy chọn
+        Body:          body,                       // io.ReadSeeker
+        ContentLength: aws.Int64(int64(len(buf))), // rất quan trọng
     })
     return err
 }
-
 
 func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBucket, srcKey string, size int64, dstBucket, dstKey string) error {
     cli, err := cc.newS3Client()
@@ -3195,14 +3202,12 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
             end = size - 1
         }
 
-        // Lấy range từ OSS
         rc, err := ossBucket.GetObject(srcKey, oss.Range(offset, end))
         if err != nil {
             _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
             return err
         }
 
-        // ĐỌC HẾT VÀO BỘ NHỚ cho từng part để có ReadSeeker
         partBuf, readErr := ioutil.ReadAll(rc)
         rc.Close()
         if readErr != nil {
@@ -3217,8 +3222,8 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
             Key:           aws.String(dstKey),
             UploadId:      aws.String(uploadID),
             PartNumber:    aws.Int32(partNumber),
-            Body:          rdr,                  // io.ReadSeeker
-            ContentLength: aws.Int64(partLen),   // quan trọng
+            Body:          rdr,                 // io.ReadSeeker
+            ContentLength: aws.Int64(partLen),  // rất quan trọng
         })
         if upErr != nil {
             _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
@@ -3240,16 +3245,6 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
         MultipartUpload: &s3types.CompletedMultipartUpload{
             Parts: completedParts,
         },
-    })
-    return err
-}
-
-
-func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
-    _, err := cli.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
-        Bucket:   aws.String(bucket),
-        Key:      aws.String(key),
-        UploadId: aws.String(uploadID),
     })
     return err
 }
@@ -3374,35 +3369,26 @@ func (cc *CopyCommand) copyConsumer(bucket *oss.Bucket, srcURL, destURL CloudURL
 	chError <- nil
 }
 
-// parseS3CloudURL chuyển "s3://bucket[/key]" thành CloudURL (chỉ bucket, object)
-// Không đụng các file/parse khác.
+// parse "s3://bucket[/key]" thành CloudURL tối thiểu
 func parseS3CloudURL(s string) (CloudURL, error) {
     s = strings.TrimSpace(s)
     low := strings.ToLower(s)
     if !strings.HasPrefix(low, "s3://") {
         return CloudURL{}, fmt.Errorf("invalid s3 url: %s", s)
     }
-
-    noPrefix := s[len("s3://"):] // bỏ "s3://"
+    noPrefix := s[len("s3://"):]
     parts := strings.SplitN(noPrefix, "/", 2)
     if len(parts) == 0 || parts[0] == "" {
         return CloudURL{}, fmt.Errorf("invalid s3 url (missing bucket): %s", s)
     }
-
     bucket := parts[0]
     object := ""
     if len(parts) == 2 {
         object = parts[1]
     }
-
-    // CloudURL tối thiểu (đủ dùng cho copy)
-    return CloudURL{
-        bucket: bucket,
-        object: object,
-    }, nil
+    return CloudURL{bucket: bucket, object: object}, nil
 }
 
-// Nếu raw dest là "s3://..." mà parser trả FileURL → ép thành CloudURL và bật cờ destIsS3
 func (cc *CopyCommand) coerceS3DestIfNeeded(destURL StorageURLer) (StorageURLer, bool, error) {
     rawDest := cc.command.args[len(cc.command.args)-1]
     if strings.HasPrefix(strings.ToLower(rawDest), "s3://") {
