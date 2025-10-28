@@ -2986,27 +2986,38 @@ func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
 }
 
 func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
+    // 1) Đích phải hợp lệ
     if err := destURL.checkObjectPrefix(); err != nil {
         return err
     }
-    // Nếu đích là S3, bỏ qua các rule tự đệ quy bucket giống nhau của OSS
+
+    // 2) Nếu đích là S3 → bỏ qua rule tự đệ quy/trùng nhau của OSS
     if cc.cpOption.destIsS3 {
         return nil
     }
 
+    // 3) Nếu khác bucket (OSS→OSS khác bucket) thì OK, không thể “tự đè”
     if srcURL.bucket != destURL.bucket {
         return nil
     }
 
-    srcPrefix := srcURL.object
+    // 4) Cùng bucket (OSS→OSS cùng bucket) → áp dụng guard như cũ
+    srcPrefix  := srcURL.object
     destPrefix := destURL.object
 
-    if srcPrefix == destPrefix && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false) && !destIsS3() {
+    // (a) Copy chính xác vào cùng key (self-copy)
+    if srcPrefix == destPrefix {
         if cc.cpOption.meta == "" {
             return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta",
                 cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
         }
-    } else if cc.cpOption.recursive && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false) && !destIsS3() {
+        // Nếu có --meta thì vẫn cho phép (giữ nguyên hành vi cũ)
+        return nil
+    }
+
+    // (b) Trường hợp --recursive: cấm đích là prefix của nguồn (gây đệ quy),
+    //     hoặc nguồn là prefix của đích (ghi đè vào chính cây nguồn)
+    if cc.cpOption.recursive {
         if strings.HasPrefix(destPrefix, srcPrefix) {
             return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursively copy should be avoided",
                 cc.urlStringFor(destURL, true), cc.urlStringFor(srcURL, false))
@@ -3016,8 +3027,10 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
                 cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
         }
     }
+
     return nil
 }
+
 
 
 func (cc *CopyCommand) copySingleFileWithReport(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) error {
