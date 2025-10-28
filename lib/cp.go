@@ -3036,7 +3036,7 @@ func (cc *CopyCommand) adjustRelativeKeyForDup(srcRelative, srcPrefix, destPrefi
 func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) (bool, error, int64, string) {
     //make object name
     srcObject := objectInfo.prefix + objectInfo.relativeKey
-    destObject := cc.makeCopyObjectName(objectInfo.relativeKey, destURL.object)
+    //destObject := cc.makeCopyObjectName(objectInfo.relativeKey, destURL.object)
     size := objectInfo.size
     srct := objectInfo.lastModified
 
