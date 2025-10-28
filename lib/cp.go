@@ -2997,7 +2997,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 		}
 	} else if cc.cpOption.recursive {
 		if strings.HasPrefix(destPrefix, srcPrefix) {
-			return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided", destURL.ToString(), srcURL.ToString())
+			return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided \"%s\"", destURL.ToString(), srcURL.ToString(), destURL.ToString())
 		}
 		if strings.HasPrefix(srcPrefix, destPrefix) {
 			return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recover source object should be avoided", srcURL.ToString(), destURL.ToString())
