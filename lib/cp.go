@@ -2991,12 +2991,11 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 	srcPrefix := srcURL.object
 	destPrefix := destURL.object
 	
-	// if srcPrefix == destPrefix && !strings.HasPrefix(destURL.String(), "s3://"){
-	// 	if cc.cpOption.meta == "" {
-	// 		return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta options", srcURL.ToString(), srcURL.ToString())
-	// 	}
-	// } else 
-	if cc.cpOption.recursive {
+	if srcPrefix == destPrefix{
+		if cc.cpOption.meta == "" {
+			return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta options test \"%s\"", srcURL.ToString(), srcURL.ToString(), desURL.ToSTring())
+		}
+	} else if cc.cpOption.recursive {
 		if strings.HasPrefix(destPrefix, srcPrefix) {
 			return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided", destURL.ToString(), srcURL.ToString())
 		}
