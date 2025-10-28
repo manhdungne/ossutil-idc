@@ -2998,7 +2998,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 			return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta options", srcURL.ToString(), destURL.ToString())
 		}
 	} else if cc.cpOption.recursive {
-		if strings.HasPrefix(destPrefix, srcPrefix) {
+		if strings.HasPrefix(destPrefix, srcPrefix) {ßß
 			return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided", destURL.ToString(), srcURL.ToString())
 		}
 		if strings.HasPrefix(srcPrefix, destPrefix) {
