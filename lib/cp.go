@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"error"
 	"path"
 	"context"
 	"fmt"
@@ -3000,12 +3001,12 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
     srcPrefix := srcURL.object
     destPrefix := destURL.object
 
-    if srcPrefix == destPrefix {
+    if srcPrefix == destPrefix && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false){
         if cc.cpOption.meta == "" {
             return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta",
                 cc.urlStringFor(srcURL, false), cc.urlStringFor(destURL, true))
         }
-    } else if cc.cpOption.recursive {
+    } else if cc.cpOption.recursive && c.urlStringFor(destURL, true) == c.urlStringFor(srcURL, false) {
         if strings.HasPrefix(destPrefix, srcPrefix) {
             return fmt.Errorf("\"%s\" include \"%s\", it's not allowed, recursively copy should be avoided",
                 cc.urlStringFor(destURL, true), cc.urlStringFor(srcURL, false))
@@ -3260,37 +3261,72 @@ func (cc *CopyCommand) makeCopyObjectName(srcRelativeObject, destObject string) 
 }
 
 func (cc *CopyCommand) skipCopy(destURL CloudURL, destObject string, srct time.Time) (bool, error) {
-	if cc.cpOption.startTime > 0 && srct.Unix() < cc.cpOption.startTime {
-		return true, nil
-	}
+    // Bộ lọc thời gian giữ nguyên
+    if cc.cpOption.startTime > 0 && srct.Unix() < cc.cpOption.startTime {
+        return true, nil
+    }
+    if cc.cpOption.endTime > 0 && srct.Unix() > cc.cpOption.endTime {
+        return true, nil
+    }
 
-	if cc.cpOption.endTime > 0 && srct.Unix() > cc.cpOption.endTime {
-		return true, nil
-	}
+    // --- NHÁNH S3: không dùng OSS bucket/meta ---
+    if cc.cpOption.destIsS3 {
+        // --update: chỉ bỏ qua nếu đích S3 mới hơn hoặc bằng nguồn
+        if cc.cpOption.update {
+            exists, lastMod, err := cc.s3HeadObject(destURL.bucket, destObject)
+            if err != nil {
+                return false, err
+            }
+            if exists && !lastMod.IsZero() && lastMod.Unix() >= srct.Unix() {
+                return true, nil // skip (đích đã mới hơn/không cần ghi)
+            }
+            return false, nil // cần copy
+        }
 
-	destBucket, err := cc.command.ossBucket(destURL.bucket)
-	if err != nil {
-		return false, err
-	}
+        // Không --update:
+        //  - nếu có --force: luôn copy (không hỏi)
+        //  - nếu không --force: xác nhận nếu object tồn tại trên S3
+        if !cc.cpOption.force {
+            exists, _, err := cc.s3HeadObject(destURL.bucket, destObject)
+            if err != nil {
+                return false, err
+            }
+            if exists {
+                // confirm với URL hiển thị dạng s3://...
+                if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, true)) {
+                    return true, nil // skip nếu người dùng không đồng ý
+                }
+            }
+        }
+        // cho copy
+        return false, nil
+    }
 
-	if cc.cpOption.update {
-		if props, err := cc.command.ossGetObjectStatRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
-			destt, err := time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified))
-			if err == nil && destt.Unix() >= srct.Unix() {
-				return true, nil
-			}
-		}
-	} else {
-		if !cc.cpOption.force {
-			if _, err := cc.command.ossGetObjectMetaRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
-				if !cc.confirm(CloudURLToString(destURL.bucket, destObject)) {
-					return true, nil
-				}
-			}
-		}
-	}
-	return false, nil
+    // --- NHÁNH OSS cũ (giữ nguyên) ---
+    destBucket, err := cc.command.ossBucket(destURL.bucket)
+    if err != nil {
+        return false, err
+    }
+
+    if cc.cpOption.update {
+        if props, err := cc.command.ossGetObjectStatRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
+            destt, err := time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified))
+            if err == nil && destt.Unix() >= srct.Unix() {
+                return true, nil
+            }
+        }
+    } else {
+        if !cc.cpOption.force {
+            if _, err := cc.command.ossGetObjectMetaRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
+                if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, false)) {
+                    return true, nil
+                }
+            }
+        }
+    }
+    return false, nil
 }
+
 
 func (cc *CopyCommand) ossCopyObjectRetry(bucket *oss.Bucket, objectName, destBucketName, destObjectName string) error {
 	retryTimes, _ := GetInt(OptionRetryTimes, cc.command.options)
@@ -3425,4 +3461,33 @@ func (cc *CopyCommand) urlStringFor(u CloudURL, isDest bool) string {
     }
     // Mặc định: giữ cách in của ossutil
     return u.ToString()
+}
+
+// Trả về (exists, lastModified, err)
+func (cc *CopyCommand) s3HeadObject(bucket, key string) (bool, time.Time, error) {
+    cli, err := cc.newS3Client()
+    if err != nil {
+        return false, time.Time{}, err
+    }
+    out, err := cli.HeadObject(context.Background(), &s3.HeadObjectInput{
+        Bucket: aws.String(bucket),
+        Key:    aws.String(key),
+    })
+    if err != nil {
+        // Không tồn tại → coi như skip=false (không chặn)
+        var nfe *s3types.NotFound
+        if errors.As(err, &nfe) {
+            return false, time.Time{}, nil
+        }
+        // RGW/MinIO có thể trả 404 bằng Generic error:
+        if strings.Contains(strings.ToLower(err.Error()), "notfound") ||
+           strings.Contains(strings.ToLower(err.Error()), "404") {
+            return false, time.Time{}, nil
+        }
+        return false, time.Time{}, err
+    }
+    if out.LastModified == nil {
+        return true, time.Time{}, nil
+    }
+    return true, *out.LastModified, nil
 }
