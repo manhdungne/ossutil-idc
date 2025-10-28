@@ -3002,7 +3002,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 
     if srcPrefix == destPrefix {
         if cc.cpOption.meta == "" {
-            return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta", srcURL.ToString(), destURL)
+            return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta", srcURL.ToString(), destURL.ToString())
         }
     } else if cc.cpOption.recursive {
         if strings.HasPrefix(destPrefix, srcPrefix) {
