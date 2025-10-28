@@ -1419,6 +1419,7 @@ func (cc *CopyCommand) RunCommand() error {
 	}
 
 	opType := cc.getCommandType(srcURLList, destURL)
+	oldOp := opType
 	LogInfo("[DEBUG] Initial opType: %d (0=PUT, 1=GET, 2=COPY)", opType)
 	opType = cc.forceCopyIfS3Dest(opType)
 	if opType != oldOp {
