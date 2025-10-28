@@ -3070,12 +3070,36 @@ func isS3URL(u CloudURL) bool {
 }
 
 func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	return s3.NewFromConfig(cfg), nil
+    // Region: lấy từ --region hoặc env, thiếu thì us-east-1 (RGW/MinIO thường ổn)
+    region, _ := GetString(OptionRegion, cc.command.options)
+    cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
+    if err != nil {
+        return nil, err
+    }
+    if cfg.Region == "" {
+        cfg.Region = "us-east-1"
+    }
+
+    // Chỉ cấu hình CHO S3 từ ENV RIÊNG, tránh đụng OSS:
+    //   S3_ENDPOINT=http://vcos.cloudstorage.com.vn
+    //   S3_PATH_STYLE=1  (bật path-style)
+    // (Không dùng OptionEndpoint ở đây để khỏi ảnh hưởng OSS)
+    var s3Opts []func(*s3.Options)
+    if ep := os.Getenv("S3_ENDPOINT"); ep != "" {
+        s3Opts = append(s3Opts, func(o *s3.Options) { o.BaseEndpoint = aws.String(ep) })
+    }
+    if os.Getenv("S3_PATH_STYLE") == "1" || os.Getenv("S3_PATH_STYLE") == "true" {
+        s3Opts = append(s3Opts, func(o *s3.Options) { o.UsePathStyle = true })
+    }
+
+    LogInfo("[DEBUG] S3 cfg - region=%s, baseEndpoint_set=%t, pathStyle=%t",
+        cfg.Region,
+        os.Getenv("S3_ENDPOINT") != "",
+        os.Getenv("S3_PATH_STYLE") == "1" || os.Getenv("S3_PATH_STYLE") == "true",
+    )
+    return s3.NewFromConfig(cfg, s3Opts...), nil
 }
+
 
 func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(ossBucket *oss.Bucket, srcBucket, srcKey, dstBucket, dstKey string) error {
 	rc, err := ossBucket.GetObject(srcKey)
