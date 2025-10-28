@@ -2989,9 +2989,9 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
         return err
     }
     // Nếu đích là S3, bỏ qua các rule tự đệ quy bucket giống nhau của OSS
-    if cc.cpOption.destIsS3 {
-        return nil
-    }
+    // if cc.cpOption.destIsS3 {
+    //     return nil
+    // }
 
     if srcURL.bucket != destURL.bucket {
         return nil
