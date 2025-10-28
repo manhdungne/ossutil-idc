@@ -3033,7 +3033,7 @@ func (cc *CopyCommand) adjustRelativeKeyForDup(srcRelative, srcPrefix, destPrefi
     if top == "" || top == "." || top == "/" {
         return srcRelative
     }
-    // DST đã kết thúc bằng top chưa?
+    // DST đã kết thúc bằng top
     dstEndsWithTop := path.Base(strings.TrimRight(destPrefix, "/")) == top
     if dstEndsWithTop {
         prefix := top + "/"
