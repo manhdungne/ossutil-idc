@@ -2990,7 +2990,7 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 	}
 	srcPrefix := srcURL.object
 	destPrefix := destURL.object
-	if srcPrefix == destPrefix {
+	if srcPrefix == destPrefix && !strings.HasPrefix(destURL.String(), "s3://"){
 		if cc.cpOption.meta == "" {
 			return fmt.Errorf("\"%s\" and \"%s\" are the same, copy self will do nothing, set meta please use --meta options", srcURL.ToString(), srcURL.ToString())
 		}
