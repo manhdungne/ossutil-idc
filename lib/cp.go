@@ -2997,9 +2997,9 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 		if cc.cpOption.meta == "" {
 			return fmt.Errorf("\"%s\" and \"%s\" are [MARK-A] the same, copy self will do nothing, set meta please use --meta options ", srcURL.ToString(), destURL)
 		}
-	} else if cc.cpOption.recursive {
+	} else if cc.cpOption.recursive && !isS3Dest {
 		if strings.HasPrefix(destPrefix, srcPrefix) {
-			return fmt.Errorf("[MARK-A] \"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided ", destURL.ToString(), srcURL.ToString())
+			return fmt.Errorf("[MARK-C] \"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided ", destURL.ToString(), srcURL.ToString())
 		}
 		if strings.HasPrefix(srcPrefix, destPrefix) {
 			return fmt.Errorf("[MARK-B] \"%s\" include \"%s\", it's not allowed, recover source object should be avoided", srcURL.ToString(), destURL.ToString())
