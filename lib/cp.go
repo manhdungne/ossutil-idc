@@ -2991,14 +2991,6 @@ func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
 	srcPrefix := srcURL.object
 	destPrefix := destURL.object
 	
-	if cc.cpOption.recursive {
-		if strings.HasPrefix(destPrefix, srcPrefix) {
-			return fmt.Errorf("[MARK-A] \"%s\" include \"%s\", it's not allowed, recursivlly copy should be avoided ", destURL.ToString(), srcURL.ToString())
-		}
-		if strings.HasPrefix(srcPrefix, destPrefix) {
-			return fmt.Errorf("[MARK-B] \"%s\" include \"%s\", it's not allowed, recover source object should be avoided", srcURL.ToString(), destURL.ToString())
-		}
-	}
 	return nil
 }
 
