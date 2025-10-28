@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"path"
 	"context"
 	"fmt"
 	"hash/fnv"
@@ -3011,12 +3012,36 @@ func (cc *CopyCommand) copySingleFileWithReport(bucket *oss.Bucket, objectInfo o
 	return err
 }
 
+func (cc *CopyCommand) adjustRelativeKeyForDup(srcRelative, srcPrefix, destPrefix string) string {
+    // Nếu SRC có "/" cuối -> copy NỘI DUNG -> không cắt gì cả
+    if strings.HasSuffix(srcPrefix, "/") {
+        return srcRelative
+    }
+    // Lấy segment đỉnh của SRC (vd: "uuid")
+    top := path.Base(strings.TrimRight(srcPrefix, "/"))
+    if top == "" || top == "." || top == "/" {
+        return srcRelative
+    }
+    // DST đã kết thúc bằng top chưa?
+    dstEndsWithTop := path.Base(strings.TrimRight(destPrefix, "/")) == top
+    if dstEndsWithTop {
+        prefix := top + "/"
+        if strings.HasPrefix(srcRelative, prefix) {
+            return strings.TrimPrefix(srcRelative, prefix)
+        }
+    }
+    return srcRelative
+}
+
 func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) (bool, error, int64, string) {
     //make object name
     srcObject := objectInfo.prefix + objectInfo.relativeKey
     destObject := cc.makeCopyObjectName(objectInfo.relativeKey, destURL.object)
     size := objectInfo.size
     srct := objectInfo.lastModified
+
+	adjustedRel := cc.adjustRelativeKeyForDup(objectInfo.relativeKey, srcURL.object, destURL.object)
+	destObject := cc.makeCopyObjectName(adjustedRel, destURL.object)
 
     msg := fmt.Sprintf("%s %s to %s", opCopy, CloudURLToString(srcURL.bucket, srcObject), CloudURLToString(destURL.bucket, destObject))
 
