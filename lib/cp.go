@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"bytes"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
 	leveldb "github.com/syndtr/goleveldb/leveldb"
