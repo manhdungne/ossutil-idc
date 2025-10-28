@@ -3102,85 +3102,109 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
 
 
 func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(ossBucket *oss.Bucket, srcBucket, srcKey, dstBucket, dstKey string) error {
-	rc, err := ossBucket.GetObject(srcKey)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
+    // Lấy object từ OSS
+    rc, err := ossBucket.GetObject(srcKey)
+    if err != nil {
+        return err
+    }
+    defer rc.Close()
 
-	cli, err := cc.newS3Client()
-	if err != nil {
-		return err
-	}
+    // Đọc toàn bộ vào RAM để có io.ReadSeeker (SDK S3 cần seek khi retry)
+    buf, err := ioutil.ReadAll(rc)
+    if err != nil {
+        return err
+    }
+    body := bytes.NewReader(buf)
 
-	_, err = cli.PutObject(context.Background(), &s3.PutObjectInput{
-		Bucket: aws.String(dstBucket),
-		Key: aws.String(dstKey),
-		Body: rc,
-	})
-	return err
+    // Tạo S3 client
+    cli, err := cc.newS3Client()
+    if err != nil {
+        return err
+    }
+
+    // Gửi PutObject với ContentLength để tránh SDK cố đo lại
+    _, err = cli.PutObject(context.Background(), &s3.PutObjectInput{
+        Bucket:        aws.String(dstBucket),
+        Key:           aws.String(dstKey),
+        Body:          body,                          // io.ReadSeeker
+        ContentLength: aws.Int64(int64(len(buf))),    // quan trọng
+        // ContentType: aws.String("application/octet-stream"), // tùy chọn
+    })
+    return err
 }
 
+
 func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBucket, srcKey string, size int64, dstBucket, dstKey string) error {
-	cli, err := cc.newS3Client()
-	if err != nil {
-		return err
-	}
+    cli, err := cc.newS3Client()
+    if err != nil {
+        return err
+    }
 
-	initOut, err := cli.CreateMultipartUpload(context.Background(), &s3.CreateMultipartUploadInput{
-		Bucket: aws.String(dstBucket),
-		Key: aws.String(dstKey),
-	})
-	if err != nil {
-		return err
-	}
-	uploadID := aws.ToString(initOut.UploadId)
+    initOut, err := cli.CreateMultipartUpload(context.Background(), &s3.CreateMultipartUploadInput{
+        Bucket: aws.String(dstBucket),
+        Key:    aws.String(dstKey),
+    })
+    if err != nil {
+        return err
+    }
+    uploadID := aws.ToString(initOut.UploadId)
 
-	partSize, _ := cc.preparePartOption(size)
-	if partSize <= 0 {
-		partSize = 8 * 1024 * 1024
-	}
+    partSize, _ := cc.preparePartOption(size)
+    if partSize <= 0 {
+        partSize = 8 * 1024 * 1024
+    }
 
-	var (
-		completedParts []s3types.CompletedPart 
-		partNumber int32 = 1
-		offset int64 = 0
-	)
+    var (
+        completedParts []s3types.CompletedPart
+        partNumber     int32 = 1
+        offset         int64 = 0
+    )
 
-	for offset < size {
-		end := offset + partSize - 1
-		if end >= size {
-			end = size -1 
-		}
-		rc, err := ossBucket.GetObject(srcKey, oss.Range(offset, end))
-		if err != nil {
-			_ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
-			return err
-		}
+    for offset < size {
+        end := offset + partSize - 1
+        if end >= size {
+            end = size - 1
+        }
 
-		upOut, upErr := cli.UploadPart(context.Background(), &s3.UploadPartInput{
-			Bucket: aws.String(dstBucket),
-			Key: aws.String(dstKey),
-			UploadId: aws.String(uploadID),
-			PartNumber: aws.Int32(partNumber),
-			Body: rc,
-			ContentLength: aws.Int64(end - offset + 1),
-		})
+        // Lấy range từ OSS
+        rc, err := ossBucket.GetObject(srcKey, oss.Range(offset, end))
+        if err != nil {
+            _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+            return err
+        }
 
-		rc.Close()
+        // ĐỌC HẾT VÀO BỘ NHỚ cho từng part để có ReadSeeker
+        partBuf, readErr := ioutil.ReadAll(rc)
+        rc.Close()
+        if readErr != nil {
+            _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+            return readErr
+        }
+        rdr := bytes.NewReader(partBuf)
+        partLen := int64(len(partBuf))
+
+        upOut, upErr := cli.UploadPart(context.Background(), &s3.UploadPartInput{
+            Bucket:        aws.String(dstBucket),
+            Key:           aws.String(dstKey),
+            UploadId:      aws.String(uploadID),
+            PartNumber:    aws.Int32(partNumber),
+            Body:          rdr,                  // io.ReadSeeker
+            ContentLength: aws.Int64(partLen),   // quan trọng
+        })
         if upErr != nil {
             _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
             return upErr
         }
+
         completedParts = append(completedParts, s3types.CompletedPart{
             ETag:       upOut.ETag,
             PartNumber: aws.Int32(partNumber),
         })
         partNumber++
         offset = end + 1
-	}
+    }
 
-	_, err = cli.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
+    _, err = cli.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
         Bucket:   aws.String(dstBucket),
         Key:      aws.String(dstKey),
         UploadId: aws.String(uploadID),
@@ -3190,6 +3214,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(ossBucket *oss.Bucket, srcBuck
     })
     return err
 }
+
 
 func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
     _, err := cli.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
