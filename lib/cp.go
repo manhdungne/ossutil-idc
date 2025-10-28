@@ -72,6 +72,8 @@ type copyOptionType struct {
 	bSyncCommand      bool
 	startTime         int64
 	endTime           int64
+
+	destIsS3          bool
 }
 
 type filterOptionType struct {
@@ -1403,13 +1405,38 @@ func (cc *CopyCommand) RunCommand() error {
 		return err
 	}
 
+	LogInfo("[DEBUG] Raw dest arg: %s", cc.command.args[len(cc.command.args)-1])
+	LogInfo("[DEBUG] Parsed destURL type: Cloud=%t File=%t", destURL.IsCloudURL(), destURL.IsFileURL())
+
+	if newDest, changed, err := cc.coerceS3DestIfNeeded(destURL); err != nil {
+		LogError("[DEBUG] coerceS3DestIfNeeded error: %v", err)
+    	return err
+	} else if changed {
+		LogInfo("[DEBUG] coerceS3DestIfNeeded: destURL converted to CloudURL (S3)")
+		destURL = newDest
+	} else {
+    LogInfo("[DEBUG] coerceS3DestIfNeeded: no change (destIsS3=%t)", cc.cpOption.destIsS3)
+	}
+
 	opType := cc.getCommandType(srcURLList, destURL)
+	LogInfo("[DEBUG] Initial opType: %d (0=PUT, 1=GET, 2=COPY)", opType)
+	opType = cc.forceCopyIfS3Dest(opType)
+	if opType != oldOp {
+    	LogInfo("[DEBUG] forceCopyIfS3Dest: changed opType from %d → %d", oldOp, opType)
+	} else {
+		LogInfo("[DEBUG] forceCopyIfS3Dest: no change (destIsS3=%t)", cc.cpOption.destIsS3)
+	}
 	if err := cc.checkCopyArgs(srcURLList, destURL, opType); err != nil {
+		LogError("[DEBUG] checkCopyArgs failed: %v", err)
 		return err
 	}
 	if err := cc.checkCopyOptions(opType); err != nil {
+		LogError("[DEBUG] checkCopyOptions failed: %v", err)
 		return err
 	}
+
+	LogInfo("[DEBUG] Final: destIsS3=%t, opType=%d (0=PUT, 1=GET, 2=COPY)", cc.cpOption.destIsS3, opType)
+
 
 	cc.cpOption.options = []oss.Option{}
 	if cc.cpOption.meta != "" {
@@ -2983,56 +3010,58 @@ func (cc *CopyCommand) copySingleFileWithReport(bucket *oss.Bucket, objectInfo o
 }
 
 func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) (bool, error, int64, string) {
-	//make object name
-	srcObject := objectInfo.prefix + objectInfo.relativeKey
-	destObject := cc.makeCopyObjectName(objectInfo.relativeKey, destURL.object)
-	size := objectInfo.size
-	srct := objectInfo.lastModified
+    //make object name
+    srcObject := objectInfo.prefix + objectInfo.relativeKey
+    destObject := cc.makeCopyObjectName(objectInfo.relativeKey, destURL.object)
+    size := objectInfo.size
+    srct := objectInfo.lastModified
 
-	msg := fmt.Sprintf("%s %s to %s", opCopy, CloudURLToString(srcURL.bucket, srcObject), CloudURLToString(destURL.bucket, destObject))
+    msg := fmt.Sprintf("%s %s to %s", opCopy, CloudURLToString(srcURL.bucket, srcObject), CloudURLToString(destURL.bucket, destObject))
 
-	//get object size
-	if size < 0 {
-		statOptions := cc.cpOption.payerOptions
-		if cc.cpOption.versionId != "" {
-			statOptions = append(statOptions, oss.VersionId(cc.cpOption.versionId))
-		}
+    //get object size
+    if size < 0 {
+        statOptions := cc.cpOption.payerOptions
+        if cc.cpOption.versionId != "" {
+            statOptions = append(statOptions, oss.VersionId(cc.cpOption.versionId))
+        }
 
-		props, err := cc.command.ossGetObjectStatRetry(bucket, srcObject, statOptions...)
-		if err != nil {
-			return false, err, size, msg
-		}
-		size, err = strconv.ParseInt(props.Get(oss.HTTPHeaderContentLength), 10, 64)
-		if err != nil {
-			return false, err, size, msg
-		}
-		if srct, err = time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); err != nil {
-			return false, err, size, msg
-		}
-	}
+        props, err := cc.command.ossGetObjectStatRetry(bucket, srcObject, statOptions...)
+        if err != nil {
+            return false, err, size, msg
+        }
+        size, err = strconv.ParseInt(props.Get(oss.HTTPHeaderContentLength), 10, 64)
+        if err != nil {
+            return false, err, size, msg
+        }
+        if srct, err = time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); err != nil {
+            return false, err, size, msg
+        }
+    }
 
-	if skip, err := cc.skipCopy(destURL, destObject, srct); err != nil || skip {
-		return skip, err, size, msg
-	}
+    if skip, err := cc.skipCopy(destURL, destObject, srct); err != nil || skip {
+        return skip, err, size, msg
+    }
 
-	if isS3URL(destURL) {
-		if size < cc.cpOption.threshold {
-			return false, cc.bridgeCopyOSS2S3_Stream(bucket, srcURL.bucket, srcObject, destURL.bucket, destObject), size, msg
-		}
-		return false, cc.bridgeCopyOSS2S3_Multipart(bucket, srcURL.bucket, srcObject, size, destURL.bucket, destObject), size, msg
-	}
+    // *** DÙNG CỜ THAY CHO isS3URL(destURL) ***
+    if cc.cpOption.destIsS3 {
+        if size < cc.cpOption.threshold {
+            return false, cc.bridgeCopyOSS2S3_Stream(bucket, srcURL.bucket, srcObject, destURL.bucket, destObject), size, msg
+        }
+        return false, cc.bridgeCopyOSS2S3_Multipart(bucket, srcURL.bucket, srcObject, size, destURL.bucket, destObject), size, msg
+    }
 
-	if size < cc.cpOption.threshold {
-		return false, cc.ossCopyObjectRetry(bucket, srcObject, destURL.bucket, destObject), size, msg
-	}
+    if size < cc.cpOption.threshold {
+        return false, cc.ossCopyObjectRetry(bucket, srcObject, destURL.bucket, destObject), size, msg
+    }
 
-	var listener *OssResumeProgressListener = &OssResumeProgressListener{&cc.monitor, 0, 0, false, false}
-	partSize, rt := cc.preparePartOption(size)
-	cp := oss.CheckpointDir(true, cc.cpOption.cpDir)
-	options := cc.cpOption.options
-	options = append(options, oss.Routines(rt), cp, oss.Progress(listener), oss.MetadataDirective(oss.MetaReplace))
-	return false, cc.ossResumeCopyRetry(srcURL.bucket, srcObject, destURL.bucket, destObject, partSize, options...), 0, msg
+    var listener *OssResumeProgressListener = &OssResumeProgressListener{&cc.monitor, 0, 0, false, false}
+    partSize, rt := cc.preparePartOption(size)
+    cp := oss.CheckpointDir(true, cc.cpOption.cpDir)
+    options := cc.cpOption.options
+    options = append(options, oss.Routines(rt), cp, oss.Progress(listener), oss.MetadataDirective(oss.MetaReplace))
+    return false, cc.ossResumeCopyRetry(srcURL.bucket, srcObject, destURL.bucket, destObject, partSize, options...), 0, msg
 }
+
 
 func isS3URL(u CloudURL) bool {
 	s := u.ToString()
@@ -3264,4 +3293,57 @@ func (cc *CopyCommand) copyConsumer(bucket *oss.Bucket, srcURL, destURL CloudURL
 	}
 
 	chError <- nil
+}
+
+// parseS3CloudURL chuyển "s3://bucket[/key]" thành CloudURL (chỉ bucket, object)
+// Không đụng các file/parse khác.
+func parseS3CloudURL(s string) (CloudURL, error) {
+    s = strings.TrimSpace(s)
+    low := strings.ToLower(s)
+    if !strings.HasPrefix(low, "s3://") {
+        return CloudURL{}, fmt.Errorf("invalid s3 url: %s", s)
+    }
+
+    noPrefix := s[len("s3://"):] // bỏ "s3://"
+    parts := strings.SplitN(noPrefix, "/", 2)
+    if len(parts) == 0 || parts[0] == "" {
+        return CloudURL{}, fmt.Errorf("invalid s3 url (missing bucket): %s", s)
+    }
+
+    bucket := parts[0]
+    object := ""
+    if len(parts) == 2 {
+        object = parts[1]
+    }
+
+    // CloudURL tối thiểu (đủ dùng cho copy)
+    return CloudURL{
+        bucket: bucket,
+        object: object,
+    }, nil
+}
+
+// Nếu raw dest là "s3://..." mà parser trả FileURL → ép thành CloudURL và bật cờ destIsS3
+func (cc *CopyCommand) coerceS3DestIfNeeded(destURL StorageURLer) (StorageURLer, bool, error) {
+    rawDest := cc.command.args[len(cc.command.args)-1]
+    if strings.HasPrefix(strings.ToLower(rawDest), "s3://") {
+        cc.cpOption.destIsS3 = true
+        if destURL.IsFileURL() {
+            s3cu, err := parseS3CloudURL(rawDest)
+            if err != nil {
+                return destURL, false, err
+            }
+            return s3cu, true, nil
+        }
+        return destURL, false, nil
+    }
+    return destURL, false, nil
+}
+
+// Nếu đích là S3 mà opType đang là GET (download) → ép thành COPY
+func (cc *CopyCommand) forceCopyIfS3Dest(opType operationType) operationType {
+    if cc.cpOption.destIsS3 && opType == operationTypeGet {
+        return operationTypeCopy
+    }
+    return opType
 }
