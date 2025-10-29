@@ -3478,7 +3478,7 @@ func (cc *CopyCommand) makeCopyObjectName(srcRelativeObject, destObject string) 
 }
 
 func (cc *CopyCommand) skipCopy(destURL CloudURL, destObject string, srct time.Time) (bool, error) {
-    // Bộ lọc thời gian giữ nguyên
+    // 0) Bộ lọc thời gian (nhanh, không request)
     if cc.cpOption.startTime > 0 && srct.Unix() < cc.cpOption.startTime {
         return true, nil
     }
@@ -3486,63 +3486,70 @@ func (cc *CopyCommand) skipCopy(destURL CloudURL, destObject string, srct time.T
         return true, nil
     }
 
-    // --- NHÁNH S3: không dùng OSS bucket/meta ---
+    // 1) ĐÍCH S3
     if cc.cpOption.destIsS3 {
-        // --update: chỉ bỏ qua nếu đích S3 mới hơn hoặc bằng nguồn
+        // 1.a) Nếu --force: luôn copy, KHÔNG HEAD
+        if cc.cpOption.force && !cc.cpOption.update {
+            return false, nil
+        }
+
+        // 1.b) --update cần so LastModified → dùng cache (HEAD mỗi key tối đa 1 lần)
         if cc.cpOption.update {
-            exists, lastMod, err := cc.s3HeadObject(destURL.bucket, destObject)
+            exists, lastMod, err := cc.s3LookupCached(destURL.bucket, destObject)
             if err != nil {
+                // Nếu lỗi 404/NotFound, s3LookupCached đã trả exists=false, err=nil.
+                // Chỉ khi lỗi khác mới trả err.
                 return false, err
             }
             if exists && !lastMod.IsZero() && lastMod.Unix() >= srct.Unix() {
-                return true, nil // skip (đích đã mới hơn/không cần ghi)
+                return true, nil // skip: đích mới hơn/không cần ghi
             }
-            return false, nil // cần copy
+            return false, nil
         }
 
-        // Không --update:
-        //  - nếu có --force: luôn copy (không hỏi)
-        //  - nếu không --force: xác nhận nếu object tồn tại trên S3
+        // 1.c) Không --update và không --force: chỉ hỏi khi thật sự TỒN TẠI (dùng cache)
         if !cc.cpOption.force {
-            exists, _, err := cc.s3HeadObject(destURL.bucket, destObject)
+            exists, _, err := cc.s3LookupCached(destURL.bucket, destObject)
             if err != nil {
                 return false, err
             }
             if exists {
-                // confirm với URL hiển thị dạng s3://...
                 if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, true)) {
-                    return true, nil // skip nếu người dùng không đồng ý
+                    return true, nil // người dùng từ chối → skip
                 }
             }
         }
-        // cho copy
-        return false, nil
+        return false, nil // copy
     }
 
-    // --- NHÁNH OSS cũ (giữ nguyên) ---
+    // 2) ĐÍCH OSS (giữ logic cũ, thêm fast-path --force để khỏi HEAD/META)
     destBucket, err := cc.command.ossBucket(destURL.bucket)
     if err != nil {
         return false, err
     }
 
+    // 2.a) --update: cần so Last-Modified
     if cc.cpOption.update {
         if props, err := cc.command.ossGetObjectStatRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
-            destt, err := time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified))
-            if err == nil && destt.Unix() >= srct.Unix() {
+            if destt, e := time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); e == nil && destt.Unix() >= srct.Unix() {
                 return true, nil
             }
         }
-    } else {
-        if !cc.cpOption.force {
-            if _, err := cc.command.ossGetObjectMetaRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
-                if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, false)) {
-                    return true, nil
-                }
-            }
+        return false, nil
+    }
+
+    // 2.b) Không --update:
+    if cc.cpOption.force {
+        return false, nil // không hỏi, không HEAD
+    }
+    if _, err := cc.command.ossGetObjectMetaRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
+        if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, false)) {
+            return true, nil
         }
     }
     return false, nil
 }
+
 
 
 func (cc *CopyCommand) ossCopyObjectRetry(bucket *oss.Bucket, objectName, destBucketName, destObjectName string) error {
@@ -3707,4 +3714,29 @@ func (cc *CopyCommand) s3HeadObject(bucket, key string) (bool, time.Time, error)
         return true, time.Time{}, nil
     }
     return true, *out.LastModified, nil
+}
+
+
+var s3HeadCache sync.Map // key: bucket+"\x00"+key -> destInfo
+
+type destInfo struct {
+    exists   bool
+    lastMod  time.Time
+    cached   bool
+}
+
+// helper: lấy từ cache; nếu chưa có thì HEAD một lần rồi cache
+func (cc *CopyCommand) s3LookupCached(bucket, key string) (exists bool, lastMod time.Time, err error) {
+    ck := bucket + "\x00" + key
+    if v, ok := s3HeadCache.Load(ck); ok {
+        di := v.(destInfo)
+        return di.exists, di.lastMod, nil
+    }
+    // fallback: HEAD 1 lần
+    ex, lm, err := cc.s3HeadObject(bucket, key)
+    if err != nil {
+        return false, time.Time{}, err
+    }
+    s3HeadCache.Store(ck, destInfo{exists: ex, lastMod: lm, cached: true})
+    return ex, lm, nil
 }
