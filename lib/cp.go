@@ -15,7 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"bytes"
+	"io"
+    "sort"
+    "math/rand"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
 	leveldb "github.com/syndtr/goleveldb/leveldb"
@@ -3151,15 +3153,6 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
 }
 
 
-
-func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
-    _, err := cli.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
-        Bucket:   aws.String(bucket),
-        Key:      aws.String(key),
-        UploadId: aws.String(uploadID),
-    })
-    return err
-}
 
 func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
     ossBucket *oss.Bucket,
