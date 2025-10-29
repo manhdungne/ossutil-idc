@@ -9,6 +9,7 @@ import (
 
 // SchemePrefix is the prefix of oss url
 const SchemePrefix string = "oss://"
+const SChemePrefixS3 string = "s3://"
 
 type CloudURLType string
 
@@ -31,6 +32,7 @@ type CloudURL struct {
 	urlStr string
 	bucket string
 	object string
+	scheme string
 }
 
 // Init is used to create a cloud url from a user input url
@@ -48,14 +50,20 @@ func (cu *CloudURL) Init(urlStr, encodingType string) error {
 func (cu *CloudURL) parseBucketObject(encodingType string) error {
 	var err error
 	path := cu.urlStr
+	lower := strings.ToLower(path)
 
-	if strings.HasPrefix(strings.ToLower(path), SchemePrefix) {
+	switch {
+	case strings.HasPrefix(lower, SchemePrefix):
+		cu.scheme = SchemePrefix
 		path = string(path[len(SchemePrefix):])
-	} else {
-		// deal with the url: /bucket/object
+	case strings.HasPrefix(lower, SChemePrefixS3):
+		cu.scheme = SChemePrefixS3
+		path = string(path[len(SChemePrefixS3):])
+	default:
 		if strings.HasPrefix(path, "/") {
 			path = string(path[1:])
 		}
+		if cu.scheme = SchemePrefix
 	}
 
 	sli := strings.SplitN(path, "/", 2)
@@ -115,10 +123,14 @@ func (cu CloudURL) IsFileURL() bool {
 
 // ToString reconstruct url
 func (cu CloudURL) ToString() string {
-	if cu.object == "" {
-		return fmt.Sprintf("%s%s", SchemePrefix, cu.bucket)
+	prefix := cu.scheme
+	if prefix != SchemePrefix && prefix != SChemePrefixS3 {
+		prefix = SchemePrefix
 	}
-	return fmt.Sprintf("%s%s/%s", SchemePrefix, cu.bucket, cu.object)
+	if cu.object == "" {
+		return fmt.Sprintf("%s%s", prefix, cu.bucket)
+	}
+	return fmt.Sprintf("%s%s/%s", prefix, cu.bucket, cu.object)
 }
 
 // FileURL describes file url
@@ -165,7 +177,8 @@ func (fu FileURL) ToString() string {
 
 // StorageURLFromString analysis input url type and build a storage url from the url
 func StorageURLFromString(urlStr, encodingType string) (StorageURLer, error) {
-	if strings.HasPrefix(strings.ToLower(urlStr), SchemePrefix) {
+	lower := strings.ToLower(urlStr)
+	if strings.HasPrefix(lower, SchemePrefix) || strings.HasPrefix(lower, SChemePrefixS3) {
 		var cloudURL CloudURL
 		if err := cloudURL.Init(urlStr, encodingType); err != nil {
 			return nil, err
@@ -205,6 +218,7 @@ func CloudURLToString(bucket string, object string) string {
 	cloudURL := CloudURL{
 		bucket: bucket,
 		object: object,
+		scheme: SchemePrefix,
 	}
 	return cloudURL.ToString()
 }
