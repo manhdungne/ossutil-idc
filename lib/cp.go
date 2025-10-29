@@ -3603,19 +3603,32 @@ func (cc *CopyCommand) ossResumeCopyRetry(bucketName, objectName, destBucketName
 }
 
 func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudURL) error {
-	cc.adjustSrcURLForCommand(&srcURL, cc.cpOption.bSyncCommand)
-	chObjects := make(chan objectInfoType, ChannelBuf)
-	chError := make(chan error, cc.cpOption.routines)
-	chListError := make(chan error, 1)
-	go cc.objectStatistic(bucket, srcURL)
-	go cc.objectProducer(bucket, srcURL, chObjects, chListError)
+    cc.adjustSrcURLForCommand(&srcURL, cc.cpOption.bSyncCommand)
 
-	for i := 0; int64(i) < cc.cpOption.routines; i++ {
-		go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
-	}
+    // >>> Prefetch index S3 đích để --update không phải HEAD
+    if cc.cpOption.update && cc.cpOption.recursive {
+        if err := cc.prefetchS3DestIndex(destURL); err != nil {
+            // không fail job nếu prefetch lỗi: chỉ log để tiếp tục (fallback HEAD)
+            LogError("[WARN] prefetchS3DestIndex failed: %v", err)
+        } else {
+            LogInfo("[DEBUG] Prefetched S3 dest index for %s/%s", destURL.bucket, destURL.object)
+        }
+    }
+    // <<<
 
-	return cc.waitRoutinueComplete(chError, chListError, opDownload)
+    chObjects := make(chan objectInfoType, ChannelBuf)
+    chError := make(chan error, cc.cpOption.routines)
+    chListError := make(chan error, 1)
+    go cc.objectStatistic(bucket, srcURL)
+    go cc.objectProducer(bucket, srcURL, chObjects, chListError)
+
+    for i := 0; int64(i) < cc.cpOption.routines; i++ {
+        go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
+    }
+
+    return cc.waitRoutinueComplete(chError, chListError, opDownload)
 }
+
 
 func (cc *CopyCommand) copyConsumer(bucket *oss.Bucket, srcURL, destURL CloudURL, chObjects <-chan objectInfoType, chError chan<- error) {
 	for objectInfo := range chObjects {
@@ -3739,4 +3752,64 @@ func (cc *CopyCommand) s3LookupCached(bucket, key string) (exists bool, lastMod 
     }
     s3HeadCache.Store(ck, destInfo{exists: ex, lastMod: lm, cached: true})
     return ex, lm, nil
+}
+
+// Prefetch toàn bộ object dưới dest prefix vào cache để --update khỏi HEAD từng key
+func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
+    if dest.bucket == "" {
+        return fmt.Errorf("prefetchS3DestIndex: empty bucket")
+    }
+    cli, err := cc.newS3Client()
+    if err != nil {
+        return err
+    }
+
+    // Nếu chỉ muốn cấp hiện tại, dùng Delimiter="/"
+    delimiter := ""
+    if cc.cpOption.onlyCurrentDir {
+        delimiter = "/"
+    }
+
+    prefix := dest.object
+    in := &s3.ListObjectsV2Input{
+        Bucket:            aws.String(dest.bucket),
+        Prefix:            aws.String(prefix),
+        MaxKeys:           aws.Int32(1000),
+    }
+    if delimiter != "" {
+        in.Delimiter = aws.String(delimiter)
+    }
+
+    for {
+        out, err := cli.ListObjectsV2(context.Background(), in)
+        if err != nil {
+            return err
+        }
+
+        for _, obj := range out.Contents {
+            // Lưu vào cache: exists=true, lastMod=obj.LastModified
+            // (obj.Key/LastModified không nil theo SDK khi object hợp lệ)
+            k := aws.ToString(obj.Key)
+            if obj.LastModified != nil {
+                s3HeadCache.Store(dest.bucket+"\x00"+k, destInfo{
+                    exists:  true,
+                    lastMod: *obj.LastModified,
+                    cached:  true,
+                })
+            } else {
+                // phòng thủ: vẫn đánh dấu tồn tại nếu thiếu timestamp
+                s3HeadCache.Store(dest.bucket+"\x00"+k, destInfo{
+                    exists: true,
+                    cached: true,
+                })
+            }
+        }
+
+        if out.IsTruncated && out.NextContinuationToken != nil {
+            in.ContinuationToken = out.NextContinuationToken
+        } else {
+            break
+        }
+    }
+    return nil
 }
