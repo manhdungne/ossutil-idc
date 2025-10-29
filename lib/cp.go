@@ -3805,11 +3805,12 @@ func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
             }
         }
 
-        if out.IsTruncated && out.NextContinuationToken != nil {
-            in.ContinuationToken = out.NextContinuationToken
-        } else {
-            break
-        }
+        if aws.ToBool(out.IsTruncated) && out.NextContinuationToken != nil {
+			in.ContinuationToken = out.NextContinuationToken
+		} else {
+			break
+		}
+
     }
     return nil
 }
