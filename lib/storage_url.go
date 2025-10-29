@@ -63,7 +63,9 @@ func (cu *CloudURL) parseBucketObject(encodingType string) error {
 		if strings.HasPrefix(path, "/") {
 			path = string(path[1:])
 		}
-		if cu.scheme = SchemePrefix
+		if cu.scheme = "" {
+			cu.scheme = SchemePrefix
+		}
 	}
 
 	sli := strings.SplitN(path, "/", 2)
