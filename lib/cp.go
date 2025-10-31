@@ -3159,16 +3159,17 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
     if region == "" { region = "us-east-1" }
 
     cfg, err := awsconfig.LoadDefaultConfig(
-        context.Background(),
-        awsconfig.WithRegion(region),
-        awsconfig.WithHTTPClient(httpClient),
-        awsconfig.WithRetryer(func() aws.Retryer {
-            // TẮT retry nội bộ SDK: 1 attempt duy nhất
-            return retry.NewStandard(func(o *retry.StandardOptions) {
-                o.MaxAttempts = 1
-            })
-        }),
-    )
+    context.Background(),
+    awsconfig.WithRegion(region),
+    awsconfig.WithHTTPClient(httpClient),
+    awsconfig.WithRetryer(func() aws.Retryer {
+        // TẮT retry nội bộ SDK: chỉ 1 attempt
+        return awsv2retry.NewStandard(func(o *awsv2retry.StandardOptions) {
+            o.MaxAttempts = 1
+        })
+    }),
+)
+
     if err != nil { return nil, err }
 
     var s3Opts []func(*s3.Options)
