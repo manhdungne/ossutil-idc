@@ -3143,18 +3143,17 @@ func isS3URL(u CloudURL) bool {
 }
 
 func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
-    // Transport tối ưu
     tr := &http.Transport{
         Proxy:                 http.ProxyFromEnvironment,
         MaxIdleConns:          512,
         MaxIdleConnsPerHost:   512,
-        MaxConnsPerHost:       0,                 // 0 = không giới hạn (tùy môi trường)
+        MaxConnsPerHost:       0,
         IdleConnTimeout:       90 * time.Second,
-        DisableCompression:    true,              // nếu không dùng gzip
+        DisableCompression:    true,
         TLSHandshakeTimeout:   10 * time.Second,
         ExpectContinueTimeout: 1 * time.Second,
     }
-    httpClient := &http.Client{ Transport: tr, Timeout: 0 }
+    httpClient := &http.Client{Transport: tr, Timeout: 0}
 
     region, _ := GetString(OptionRegion, cc.command.options)
     if region == "" { region = "us-east-1" }
@@ -3162,7 +3161,13 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
     cfg, err := awsconfig.LoadDefaultConfig(
         context.Background(),
         awsconfig.WithRegion(region),
-        awsconfig.WithHTTPClient(httpClient), // <— gắn pool
+        awsconfig.WithHTTPClient(httpClient),
+        awsconfig.WithRetryer(func() aws.Retryer {
+            // TẮT retry nội bộ SDK: 1 attempt duy nhất
+            return retry.NewStandard(func(o *retry.StandardOptions) {
+                o.MaxAttempts = 1
+            })
+        }),
     )
     if err != nil { return nil, err }
 
@@ -3890,23 +3895,26 @@ func (cc *CopyCommand) urlStringFor(u CloudURL, isDest bool) string {
 
 // Trả về (exists, lastModified, err)
 func (cc *CopyCommand) s3HeadObject(bucket, key string) (bool, time.Time, error) {
-    cli, err := cc.newS3Client()
+    cli, err := cc.getS3Client() // <— dùng client tái sử dụng, đã tắt retry SDK
     if err != nil {
         return false, time.Time{}, err
     }
-    out, err := cli.HeadObject(context.Background(), &s3.HeadObjectInput{
+
+    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+
+    out, err := cli.HeadObject(ctx, &s3.HeadObjectInput{
         Bucket: aws.String(bucket),
         Key:    aws.String(key),
     })
     if err != nil {
-        // Không tồn tại → coi như skip=false (không chặn)
         var nfe *s3types.NotFound
         if errors.As(err, &nfe) {
+            // negative cache sẽ được lưu ở s3LookupCached()
             return false, time.Time{}, nil
         }
-        // RGW/MinIO có thể trả 404 bằng Generic error:
-        if strings.Contains(strings.ToLower(err.Error()), "notfound") ||
-           strings.Contains(strings.ToLower(err.Error()), "404") {
+        low := strings.ToLower(err.Error())
+        if strings.Contains(low, "notfound") || strings.Contains(low, "404") {
             return false, time.Time{}, nil
         }
         return false, time.Time{}, err
@@ -3916,6 +3924,7 @@ func (cc *CopyCommand) s3HeadObject(bucket, key string) (bool, time.Time, error)
     }
     return true, *out.LastModified, nil
 }
+
 
 
 var s3HeadCache sync.Map // key: bucket+"\x00"+key -> destInfo
