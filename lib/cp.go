@@ -29,6 +29,7 @@ import (
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	awsv2retry "github.com/aws/aws-sdk-go-v2/aws/retry"
+	"github.com/aws/smithy-go"
 )
 
 type operationType int
