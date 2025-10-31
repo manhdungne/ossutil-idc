@@ -28,8 +28,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go"
-	"github.com/aws/smithy-go/retry"
+	awsv2retry "github.com/aws/aws-sdk-go-v2/aws/retry"
 )
 
 type operationType int
