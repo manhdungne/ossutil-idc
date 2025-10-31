@@ -3647,14 +3647,14 @@ func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID st
     return err
 }
 
-// Exponential backoff with cap
-func expBackoff(try int, base, capDur time.Duration) time.Duration {
-    d := base * time.Duration(1<<(try-1))
-    if d > capDur { d = capDur }
-    // add jitter nhỏ
-    j := time.Duration(rand.Int63n(int64(d / 3)))
-    return d + j
-}
+// // Exponential backoff with cap
+// func expBackoff(try int, base, capDur time.Duration) time.Duration {
+//     d := base * time.Duration(1<<(try-1))
+//     if d > capDur { d = capDur }
+//     // add jitter nhỏ
+//     j := time.Duration(rand.Int63n(int64(d / 3)))
+//     return d + j
+// }
 
 
 
