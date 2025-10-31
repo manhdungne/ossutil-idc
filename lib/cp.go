@@ -1260,6 +1260,10 @@ type CopyCommand struct {
 	monitor  CPMonitor //Put first for atomic op on some fileds
 	command  Command
 	cpOption copyOptionType
+
+	s3Once   sync.Once
+    s3Client *s3.Client
+    s3Err    error
 }
 
 var copyCommand = CopyCommand{
@@ -3127,14 +3131,28 @@ func isS3URL(u CloudURL) bool {
 }
 
 func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
+    // Transport tối ưu
+    tr := &http.Transport{
+        Proxy:                 http.ProxyFromEnvironment,
+        MaxIdleConns:          512,
+        MaxIdleConnsPerHost:   512,
+        MaxConnsPerHost:       0,                 // 0 = không giới hạn (tùy môi trường)
+        IdleConnTimeout:       90 * time.Second,
+        DisableCompression:    true,              // nếu không dùng gzip
+        TLSHandshakeTimeout:   10 * time.Second,
+        ExpectContinueTimeout: 1 * time.Second,
+    }
+    httpClient := &http.Client{ Transport: tr, Timeout: 0 }
+
     region, _ := GetString(OptionRegion, cc.command.options)
-    cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
-    if err != nil {
-        return nil, err
-    }
-    if cfg.Region == "" {
-        cfg.Region = "us-east-1"
-    }
+    if region == "" { region = "us-east-1" }
+
+    cfg, err := awsconfig.LoadDefaultConfig(
+        context.Background(),
+        awsconfig.WithRegion(region),
+        awsconfig.WithHTTPClient(httpClient), // <— gắn pool
+    )
+    if err != nil { return nil, err }
 
     var s3Opts []func(*s3.Options)
     if ep := os.Getenv("S3_ENDPOINT"); ep != "" {
@@ -3143,14 +3161,10 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
     if os.Getenv("S3_PATH_STYLE") == "1" || os.Getenv("S3_PATH_STYLE") == "true" {
         s3Opts = append(s3Opts, func(o *s3.Options) { o.UsePathStyle = true })
     }
-
-    LogInfo("[DEBUG] S3 cfg - region=%s, baseEndpoint_set=%t, pathStyle=%t",
-        cfg.Region,
-        os.Getenv("S3_ENDPOINT") != "",
-        os.Getenv("S3_PATH_STYLE") == "1" || os.Getenv("S3_PATH_STYLE") == "true",
-    )
     return s3.NewFromConfig(cfg, s3Opts...), nil
 }
+
+
 
 
 
@@ -3173,7 +3187,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
     defer rc.Close()
 
     // 3) S3 client
-    cli, err := cc.newS3Client()
+    cli, err := cc.getS3Client()
     if err != nil {
         return err
     }
@@ -3200,74 +3214,108 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
     return err
 }
 
+func expBackoff(try int, base, capDur time.Duration) time.Duration {
+    d := base * time.Duration(1<<(try-1))
+    if d > capDur { d = capDur }
+    j := time.Duration(rand.Int63n(int64(d / 3)))
+    return d + j
+}
+
 func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
     ossBucket *oss.Bucket,
     srcBucket, srcKey string,
     size int64,
     dstBucket, dstKey string,
 ) error {
-    cli, err := cc.newS3Client()
-    if err != nil {
-        return err
-    }
+    const (
+        maxTry      = 3
+        baseBackoff = 2 * time.Second
+        capBackoff  = 20 * time.Second
+    )
 
-    // 1) HEAD OSS: build metadata for CreateMultipartUpload
-    head, err := ossBucket.GetObjectDetailedMeta(srcKey)
-    if err != nil {
-        return err
+    var last error
+    for attempt := 1; attempt <= maxTry; attempt++ {
+        if attempt > 1 {
+            sleep := expBackoff(attempt, baseBackoff, capBackoff)
+            LogInfo("[Retry] object %s → %s attempt %d/%d, sleeping %v",
+                srcKey, dstKey, attempt, maxTry, sleep)
+            time.Sleep(sleep)
+        }
+
+        err := cc.bridgeCopyOSS2S3_MultipartOnce(ossBucket, srcBucket, srcKey, size, dstBucket, dstKey)
+        if err == nil {
+            return nil
+        }
+
+        // Gặp lỗi tạm (5xx/timeout/SlowDown...) thì thử lại; lỗi 4xx auth/tham số thì bỏ luôn
+        // (ở đây đơn giản: cứ retry tối đa maxTry; muốn thông minh hơn thì phân loại err)
+        last = err
+        LogError("[Retry] object %s → %s failed (attempt %d/%d): %v",
+            srcKey, dstKey, attempt, maxTry, err)
     }
+    return last
+}
+
+func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
+    ossBucket *oss.Bucket,
+    srcBucket, srcKey string,
+    size int64,
+    dstBucket, dstKey string,
+) error {
+    cli, err := cc.getS3Client() // tái dùng client
+    if err != nil { return err }
+
+    // HEAD OSS: metadata cho Create MPU
+    head, err := ossBucket.GetObjectDetailedMeta(srcKey)
+    if err != nil { return err }
     md, putHdr := cc.buildS3ObjectHeadersFromOSSHead(head)
 
-    // 2) Create MPU on S3 (preserve metadata here)
+    // Context timeout cho 1 object lớn (tuỳ bạn chỉnh)
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+    defer cancel()
+
+    // Create MPU
     createIn := &s3.CreateMultipartUploadInput{
         Bucket:      aws.String(dstBucket),
         Key:         aws.String(dstKey),
         Metadata:    md,
         ContentType: putHdr.ContentType,
-        // (tuỳ nhu cầu) CacheControl/Encoding/Disposition/Language/ACL/Tagging/StorageClass/SSE...
     }
-    up, err := cli.CreateMultipartUpload(context.Background(), createIn)
-    if err != nil {
-        return err
-    }
+    up, err := cli.CreateMultipartUpload(ctx, createIn)
+    if err != nil { return err }
     uploadID := aws.ToString(up.UploadId)
 
-    // 3) Decide partSize & concurrency
+    // Part size + concurrency
     partSize, workers := cc.preparePartOption(size)
-    if partSize < 5*1024*1024 { // S3 MPU rule
-        partSize = 5 * 1024 * 1024
-    }
+    if partSize < 5*1024*1024 { partSize = 5 * 1024 * 1024 } // bắt buộc theo S3
 
-    // 4) Build tasks
-    type task struct {
-        num    int32
-        start  int64
-        end    int64
-    }
-    tasks := make(chan task, 64)
-    results := make(chan s3types.CompletedPart, 64)
-    errCh := make(chan error, 1)
+    // Channel buf tỉ lệ theo workers
+    buf := workers * 4
+    if buf < 64 { buf = 64 } // sàn
+    type task struct{ num int32; start, end int64 }
+    tasks   := make(chan task, buf)
+    results := make(chan s3types.CompletedPart, buf)
+    errCh   := make(chan error, 1)
 
-    // 5) Worker pool
+    // Worker pool: GET range từ OSS → UploadPart (có retry cục bộ)
     var wg sync.WaitGroup
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-
-    // Per-part worker: GET range from OSS -> temp file (ReadSeeker) -> UploadPart with retry
     for w := 0; w < workers; w++ {
         wg.Add(1)
         go func() {
             defer wg.Done()
             for t := range tasks {
+                // tôn trọng cancel: nếu ctx done thì dừng sớm
+                select {
+                case <-ctx.Done():
+                    return
+                default:
+                }
                 cp, e := cc.uploadSinglePartWithRetry(ctx, cli, ossBucket,
                     srcKey, dstBucket, dstKey, uploadID, t.num, t.start, t.end)
                 if e != nil {
                     // abort toàn bộ MPU rồi báo lỗi
                     _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
-                    select {
-                    case errCh <- e:
-                    default:
-                    }
+                    select { case errCh <- e: default: }
                     return
                 }
                 results <- cp
@@ -3275,7 +3323,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
         }()
     }
 
-    // 6) Feed tasks
+    // Feed tasks
     go func() {
         var (
             num int32 = 1
@@ -3283,9 +3331,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
         )
         for off < size {
             end := off + partSize - 1
-            if end >= size {
-                end = size - 1
-            }
+            if end >= size { end = size - 1 }
             tasks <- task{num: num, start: off, end: end}
             num++
             off = end + 1
@@ -3295,21 +3341,22 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
         close(results)
     }()
 
-    // 7) Collect parts (and stop on error)
+    // Collect + Complete
     var completed []s3types.CompletedPart
     for {
         select {
         case e := <-errCh:
-            if e != nil {
-                return e
-            }
+            if e != nil { return e }
+        case <-ctx.Done():
+            // hủy thì abort
+            _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+            return ctx.Err()
         case cp, ok := <-results:
             if !ok {
-                // all done
+                // all parts done
                 sort.Slice(completed, func(i, j int) bool {
                     return aws.ToInt32(completed[i].PartNumber) < aws.ToInt32(completed[j].PartNumber)
                 })
-                // 8) Complete MPU
                 _, err = cli.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
                     Bucket:   aws.String(dstBucket),
                     Key:      aws.String(dstKey),
@@ -3324,6 +3371,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
         }
     }
 }
+
 
 // s3PutHeaders gom các trường chuẩn để gán vào PutObject/CreateMultipartUpload
 type s3PutHeaders struct {
@@ -3813,4 +3861,12 @@ func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
 
     }
     return nil
+}
+
+//Hàm lấy S3 Client
+func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
+    cc.s3Once.Do(func() {
+        cc.s3Client, cc.s3Err = cc.newS3Client() // có http.Transport tối ưu (bên dưới)
+    })
+    return cc.s3Client, cc.s3Err
 }
