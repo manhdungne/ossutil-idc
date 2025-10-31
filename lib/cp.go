@@ -18,6 +18,8 @@ import (
 	"io"
     "sort"
     "math/rand"
+	"syscall"
+	"net"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
 	leveldb "github.com/syndtr/goleveldb/leveldb"
@@ -26,6 +28,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 type operationType int
@@ -41,6 +44,15 @@ const (
 	opDownload        = "download"
 	opCopy            = "copy"
 )
+
+type RetryConfig struct {
+	MaxAttempts int           // tổng số lần thử, >=1
+	BaseBackoff time.Duration // backoff cơ bản (lần 1)
+	MaxBackoff  time.Duration // trần backoff
+	// hook log, optional
+	OnRetry func(attempt int, err error, sleep time.Duration)
+}
+
 
 /*
  * Put same type variables together to make them 64bits alignment to avoid
@@ -3169,49 +3181,75 @@ func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
 
 
 func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
-    ossBucket *oss.Bucket,
-    srcBucket, srcKey, dstBucket, dstKey string,
+	ossBucket *oss.Bucket,
+	srcBucket, srcKey, dstBucket, dstKey string,
 ) error {
-    // 1) HEAD OSS to get metadata
-    head, err := ossBucket.GetObjectDetailedMeta(srcKey)
-    if err != nil {
-        return err
-    }
-    md, putHdr := cc.buildS3ObjectHeadersFromOSSHead(head)
+	// 1) Lấy metadata OSS (seekable, làm 1 lần)
+	head, err := ossBucket.GetObjectDetailedMeta(srcKey)
+	if err != nil {
+		return err
+	}
+	md, putHdr := cc.buildS3ObjectHeadersFromOSSHead(head)
 
-    // 2) Open streaming body from OSS
-    rc, err := ossBucket.GetObject(srcKey)
-    if err != nil {
-        return err
-    }
-    defer rc.Close()
+	// 2) S3 client (re-use)
+	cli, err := cc.getS3Client()
+	if err != nil {
+		return err
+	}
 
-    // 3) S3 client
-    cli, err := cc.getS3Client()
-    if err != nil {
-        return err
-    }
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+	defer cancel()
 
-    // 4) PutObject with streaming body and preserved metadata
-    in := &s3.PutObjectInput{
-        Bucket:      aws.String(dstBucket),
-        Key:         aws.String(dstKey),
-        Body:        rc,        // stream trực tiếp
-        Metadata:    md,        // x-amz-meta-*
-        ContentType: putHdr.ContentType,
-    }
-    if putHdr.ContentLength != nil { in.ContentLength = putHdr.ContentLength }
-    if putHdr.ContentEncoding != nil { in.ContentEncoding = putHdr.ContentEncoding }
-    if putHdr.CacheControl != nil { in.CacheControl = putHdr.CacheControl }
-    if putHdr.ContentDisposition != nil { in.ContentDisposition = putHdr.ContentDisposition }
-    if putHdr.ContentLanguage != nil { in.ContentLanguage = putHdr.ContentLanguage }
+	cfg := DefaultRetryConfig()
+	cfg.OnRetry = func(attempt int, e error, sleep time.Duration) {
+		LogError("[PutObject Retry] %s -> %s attempt %d: %v (sleep %v)",
+			srcKey, dstKey, attempt, e, sleep)
+	}
 
-    // (tuỳ nhu cầu) áp dụng ACL/Tagging/StorageClass/SSE nếu bạn đang lấy từ CLI
-    // in.ACL = types.ObjectCannedACLPrivate
-    // in.Tagging = aws.String("k1=v1&k2=v2")
+	// 3) Bọc retry: MỖI attempt mở lại rc từ OSS
+	return DoWithRetry(ctx, cfg, func(attempt int) error {
+		rc, e := ossBucket.GetObject(srcKey)
+		if e != nil {
+			return e
+		}
+		defer rc.Close()
 
-    _, err = cli.PutObject(context.Background(), in)
-    return err
+		in := &s3.PutObjectInput{
+			Bucket:      aws.String(dstBucket),
+			Key:         aws.String(dstKey),
+			Body:        rc, // stream trực tiếp
+			Metadata:    md,
+			ContentType: putHdr.ContentType,
+		}
+		if putHdr.ContentLength != nil {
+			in.ContentLength = putHdr.ContentLength
+		}
+		if putHdr.ContentEncoding != nil {
+			in.ContentEncoding = putHdr.ContentEncoding
+		}
+		if putHdr.CacheControl != nil {
+			in.CacheControl = putHdr.CacheControl
+		}
+		if putHdr.ContentDisposition != nil {
+			in.ContentDisposition = putHdr.ContentDisposition
+		}
+		if putHdr.ContentLanguage != nil {
+			in.ContentLanguage = putHdr.ContentLanguage
+		}
+
+		_, e = cli.PutObject(ctx, in)
+		return e
+	})
+}
+
+
+// Mặc định: 3 lần, backoff 2s -> 20s
+func DefaultRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxAttempts: 3,
+		BaseBackoff: 2 * time.Second,
+		MaxBackoff:  20 * time.Second,
+	}
 }
 
 func expBackoff(try int, base, capDur time.Duration) time.Duration {
@@ -3221,40 +3259,142 @@ func expBackoff(try int, base, capDur time.Duration) time.Duration {
     return d + j
 }
 
-func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
-    ossBucket *oss.Bucket,
-    srcBucket, srcKey string,
-    size int64,
-    dstBucket, dstKey string,
-) error {
-    const (
-        maxTry      = 3
-        baseBackoff = 2 * time.Second
-        capBackoff  = 20 * time.Second
-    )
+// Quyết định lỗi có nên retry hay không
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
 
-    var last error
-    for attempt := 1; attempt <= maxTry; attempt++ {
-        if attempt > 1 {
-            sleep := expBackoff(attempt, baseBackoff, capBackoff)
-            LogInfo("[Retry] object %s → %s attempt %d/%d, sleeping %v",
-                srcKey, dstKey, attempt, maxTry, sleep)
-            time.Sleep(sleep)
-        }
+	// Ngừng retry nếu context hủy/hết hạn
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 
-        err := cc.bridgeCopyOSS2S3_MultipartOnce(ossBucket, srcBucket, srcKey, size, dstBucket, dstKey)
-        if err == nil {
-            return nil
-        }
+	// Lỗi mạng tạm thời / timeout
+	var nerr net.Error
+	if errors.As(err, &nerr) && (nerr.Timeout() || nerr.Temporary()) {
+		return true
+	}
 
-        // Gặp lỗi tạm (5xx/timeout/SlowDown...) thì thử lại; lỗi 4xx auth/tham số thì bỏ luôn
-        // (ở đây đơn giản: cứ retry tối đa maxTry; muốn thông minh hơn thì phân loại err)
-        last = err
-        LogError("[Retry] object %s → %s failed (attempt %d/%d): %v",
-            srcKey, dstKey, attempt, maxTry, err)
-    }
-    return last
+	// Một số lỗi hệ thống phổ biến có thể retry
+	var se syscall.Errno
+	if errors.As(err, &se) {
+		switch se {
+		case syscall.ECONNRESET, syscall.ETIMEDOUT, syscall.EPIPE:
+			return true
+		}
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	// Lỗi dạng chuỗi hay gặp khi qua proxy/RGW/MinIO
+	low := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(low, "connection reset by peer"),
+		strings.Contains(low, "broken pipe"),
+		strings.Contains(low, "timeout"),
+		strings.Contains(low, "temporarily unavailable"),
+		strings.Contains(low, "tls handshake timeout"):
+		return true
+	}
+
+	// OSS SDK: 5xx hoặc các code throttling/timeout có thể retry
+	var ossErr oss.ServiceError
+	if errors.As(err, &ossErr) {
+		if ossErr.StatusCode >= 500 {
+			return true
+		}
+		switch ossErr.Code {
+		case "RequestTimeout", "Throttling", "ThrottlingException", "SlowDown":
+			return true
+		}
+		return false
+	}
+
+	// AWS smithy error: coi 5xx là retryable, 4xx là không
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		type httpCode interface{ HTTPStatusCode() int }
+		if hc, ok := apiErr.(httpCode); ok {
+			code := hc.HTTPStatusCode()
+			if code >= 500 {
+				return true
+			}
+			// throttling các dịch vụ S3-compat hay trả 503/SlowDown → ở trên đã cover
+			return false
+		}
+	}
+
+	// Mặc định: không retry
+	return false
 }
+
+// Hàm bọc retry dùng chung.
+// fn(attempt) phải là "idempotent" hoặc tự tái-tạo nguồn dữ liệu cho mỗi attempt.
+func DoWithRetry(ctx context.Context, cfg RetryConfig, fn func(attempt int) error) error {
+	if cfg.MaxAttempts <= 0 {
+		cfg = DefaultRetryConfig()
+	}
+	if cfg.BaseBackoff <= 0 {
+		cfg.BaseBackoff = 2 * time.Second
+	}
+	if cfg.MaxBackoff <= 0 {
+		cfg.MaxBackoff = 20 * time.Second
+	}
+
+	var last error
+	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		err := fn(attempt)
+		if err == nil {
+			return nil
+		}
+		last = err
+
+		// Không retry nữa nếu không phải lỗi retryable hoặc đã hết số lần
+		if attempt == cfg.MaxAttempts || !isRetryable(err) {
+			return last
+		}
+
+		sleep := expBackoff(attempt, cfg.BaseBackoff, cfg.MaxBackoff)
+		if cfg.OnRetry != nil {
+			cfg.OnRetry(attempt, err, sleep)
+		}
+		select {
+		case <-time.After(sleep):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return last
+}
+
+func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
+	ossBucket *oss.Bucket,
+	srcBucket, srcKey string,
+	size int64,
+	dstBucket, dstKey string,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	cfg := DefaultRetryConfig()
+	cfg.OnRetry = func(attempt int, e error, sleep time.Duration) {
+		LogError("[MPU Retry] %s -> %s attempt %d: %v (sleep %v)",
+			srcKey, dstKey, attempt, e, sleep)
+	}
+
+	return DoWithRetry(ctx, cfg, func(attempt int) error {
+		// Mỗi attempt thực hiện trọn vẹn 1 lượt: CreateMPU -> upload parts (mỗi part đã có retry cục bộ) -> Complete
+		return cc.bridgeCopyOSS2S3_MultipartOnce(ossBucket, srcBucket, srcKey, size, dstBucket, dstKey)
+	})
+}
+
 
 func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     ossBucket *oss.Bucket,
