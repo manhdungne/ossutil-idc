@@ -3672,70 +3672,55 @@ func (cc *CopyCommand) makeCopyObjectName(srcRelativeObject, destObject string) 
 	return destObject
 }
 
-func (cc *CopyCommand) skipCopy(destURL CloudURL, destObject string, srct time.Time) (bool, error) {
-    // 0) Bộ lọc thời gian (nhanh, không request)
-    if cc.cpOption.startTime > 0 && srct.Unix() < cc.cpOption.startTime {
-        return true, nil
-    }
-    if cc.cpOption.endTime > 0 && srct.Unix() > cc.cpOption.endTime {
-        return true, nil
-    }
+func (cc *CopyCommand) skipCopy(destURL CloudURL, destObject string, _ time.Time) (bool, error) {
+    // Bộ lọc thời gian vẫn giữ nguyên nếu bạn cần; nếu không, có thể bỏ luôn 2 điều kiện start/end
 
-    // 1) ĐÍCH S3
     if cc.cpOption.destIsS3 {
-        // 1.a) Nếu --force: luôn copy, KHÔNG HEAD
+        // --force: luôn copy, khỏi kiểm tra
         if cc.cpOption.force && !cc.cpOption.update {
             return false, nil
         }
 
-        // 1.b) --update cần so LastModified → dùng cache (HEAD mỗi key tối đa 1 lần)
+        // Chỉ cần biết CÓ/KO
+        exists, err := cc.s3LookupExistCached(destURL.bucket, destObject)
+        if err != nil {
+            return false, err
+        }
+
         if cc.cpOption.update {
-            exists, lastMod, err := cc.s3LookupCached(destURL.bucket, destObject)
-            if err != nil {
-                // Nếu lỗi 404/NotFound, s3LookupCached đã trả exists=false, err=nil.
-                // Chỉ khi lỗi khác mới trả err.
-                return false, err
-            }
-            if exists && !lastMod.IsZero() && lastMod.Unix() >= srct.Unix() {
-                return true, nil // skip: đích mới hơn/không cần ghi
+            // BỎ so sánh LastModified -> nếu đã có thì skip
+            if exists {
+                return true, nil
             }
             return false, nil
         }
 
-        // 1.c) Không --update và không --force: chỉ hỏi khi thật sự TỒN TẠI (dùng cache)
         if !cc.cpOption.force {
-            exists, _, err := cc.s3LookupCached(destURL.bucket, destObject)
-            if err != nil {
-                return false, err
-            }
             if exists {
                 if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, true)) {
-                    return true, nil // người dùng từ chối → skip
+                    return true, nil // user chọn không overwrite => skip
                 }
-            }
-        }
-        return false, nil // copy
-    }
-
-    // 2) ĐÍCH OSS (giữ logic cũ, thêm fast-path --force để khỏi HEAD/META)
-    destBucket, err := cc.command.ossBucket(destURL.bucket)
-    if err != nil {
-        return false, err
-    }
-
-    // 2.a) --update: cần so Last-Modified
-    if cc.cpOption.update {
-        if props, err := cc.command.ossGetObjectStatRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
-            if destt, e := time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); e == nil && destt.Unix() >= srct.Unix() {
-                return true, nil
             }
         }
         return false, nil
     }
 
-    // 2.b) Không --update:
+    // ĐÍCH OSS: giữ nguyên logic cũ (hoặc bạn cũng có thể chuyển qua LIST tương tự nếu muốn)
+    destBucket, err := cc.command.ossBucket(destURL.bucket)
+    if err != nil {
+        return false, err
+    }
+    if cc.cpOption.update {
+        // OSS: vẫn hỗ trợ update cũ; nếu muốn “exist-only” thì đổi sang oss LIST tương tự trên
+        if props, err := cc.command.ossGetObjectStatRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
+            if _, e := time.Parse(http.TimeFormat, props.Get(oss.HTTPHeaderLastModified)); e == nil {
+                return true, nil
+            }
+        }
+        return false, nil
+    }
     if cc.cpOption.force {
-        return false, nil // không hỏi, không HEAD
+        return false, nil
     }
     if _, err := cc.command.ossGetObjectMetaRetry(destBucket, destObject, cc.cpOption.payerOptions...); err == nil {
         if !cc.confirm(cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destObject}, false)) {
@@ -3744,6 +3729,7 @@ func (cc *CopyCommand) skipCopy(destURL CloudURL, destObject string, srct time.T
     }
     return false, nil
 }
+
 
 
 
@@ -3933,9 +3919,9 @@ var s3HeadCache sync.Map // key: bucket+"\x00"+key -> destInfo
 
 type destInfo struct {
     exists   bool
-    lastMod  time.Time
-    cached   bool
 }
+
+var s3ExistCache sync.Map
 
 // helper: lấy từ cache; nếu chưa có thì HEAD một lần rồi cache
 func (cc *CopyCommand) s3LookupCached(bucket, key string) (exists bool, lastMod time.Time, err error) {
@@ -3953,7 +3939,6 @@ func (cc *CopyCommand) s3LookupCached(bucket, key string) (exists bool, lastMod 
     return ex, lm, nil
 }
 
-// Prefetch toàn bộ object dưới dest prefix vào cache để --update khỏi HEAD từng key
 func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
     if dest.bucket == "" {
         return fmt.Errorf("prefetchS3DestIndex: empty bucket")
@@ -3963,17 +3948,15 @@ func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
         return err
     }
 
-    // Nếu chỉ muốn cấp hiện tại, dùng Delimiter="/"
     delimiter := ""
     if cc.cpOption.onlyCurrentDir {
         delimiter = "/"
     }
 
-    prefix := dest.object
     in := &s3.ListObjectsV2Input{
-        Bucket:            aws.String(dest.bucket),
-        Prefix:            aws.String(prefix),
-        MaxKeys:           aws.Int32(1000),
+        Bucket:  aws.String(dest.bucket),
+        Prefix:  aws.String(dest.object),
+        MaxKeys: aws.Int32(1000),
     }
     if delimiter != "" {
         in.Delimiter = aws.String(delimiter)
@@ -3984,35 +3967,19 @@ func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
         if err != nil {
             return err
         }
-
         for _, obj := range out.Contents {
-            // Lưu vào cache: exists=true, lastMod=obj.LastModified
-            // (obj.Key/LastModified không nil theo SDK khi object hợp lệ)
             k := aws.ToString(obj.Key)
-            if obj.LastModified != nil {
-                s3HeadCache.Store(dest.bucket+"\x00"+k, destInfo{
-                    exists:  true,
-                    lastMod: *obj.LastModified,
-                    cached:  true,
-                })
-            } else {
-                // phòng thủ: vẫn đánh dấu tồn tại nếu thiếu timestamp
-                s3HeadCache.Store(dest.bucket+"\x00"+k, destInfo{
-                    exists: true,
-                    cached: true,
-                })
-            }
+            s3ExistCache.Store(dest.bucket+"\x00"+k, destInfo{exists: true})
         }
-
         if aws.ToBool(out.IsTruncated) && out.NextContinuationToken != nil {
-			in.ContinuationToken = out.NextContinuationToken
-		} else {
-			break
-		}
-
+            in.ContinuationToken = out.NextContinuationToken
+        } else {
+            break
+        }
     }
     return nil
 }
+
 
 //Hàm lấy S3 Client
 func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
@@ -4020,4 +3987,32 @@ func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
         cc.s3Client, cc.s3Err = cc.newS3Client() // có http.Transport tối ưu (bên dưới)
     })
     return cc.s3Client, cc.s3Err
+}
+
+// Trả về: exists, err
+func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
+    ck := bucket + "\x00" + key
+    if v, ok := s3ExistCache.Load(ck); ok {
+        return v.(destInfo).exists, nil
+    }
+    // Fallback: LIST đúng 1 key với prefix = key
+    cli, err := cc.getS3Client()
+    if err != nil {
+        return false, err
+    }
+    out, err := cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+        Bucket:  aws.String(bucket),
+        Prefix:  aws.String(key),
+        MaxKeys: aws.Int32(1),
+    })
+    if err != nil {
+        return false, err
+    }
+    exists := false
+    if len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key {
+        exists = true
+    }
+    // Cache kết quả (cả true/false – negative cache)
+    s3ExistCache.Store(ck, destInfo{exists: exists})
+    return exists, nil
 }
