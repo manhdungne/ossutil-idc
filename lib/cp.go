@@ -1678,11 +1678,27 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 }
 
 func (cc *CopyCommand) progressBar() {
-	// fetch all reveal
-	for signal := range chProgressSignal {
-		fmt.Printf(cc.monitor.progressBar(signal.finish, signal.exitStat))
-	}
+    idle := 0
+    for {
+        select {
+        case signal, ok := <-chProgressSignal:
+            if !ok {
+                return
+            }
+            fmt.Printf(cc.monitor.progressBar(signal.finish, signal.exitStat))
+            idle = 0
+        case <-time.After(500 * time.Millisecond):
+            // nếu đã yêu cầu đóng và không còn dữ liệu mới → thoát
+            if signalNum == -1 {
+                idle++
+                if idle >= 4 { // ~2s không có tín hiệu
+                    return
+                }
+            }
+        }
+    }
 }
+
 
 func (cc *CopyCommand) closeProgress() {
 	signalNum = -1
@@ -2942,46 +2958,57 @@ func (cc *CopyCommand) downloadConsumer(bucket *oss.Bucket, filePath string, chO
 }
 
 func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, opStr string) error {
+    completed := 0
+    var ferr error
+    start := time.Now()
 
-	completed := 0
-	var ferr error
-	start := time.Now()
+    done := make(chan struct{}) // báo watchdog dừng
 
-	go func() {
+    // Watchdog in tiến độ định kỳ, dừng khi close(done)
+    go func() {
+        ticker := time.NewTicker(30 * time.Second)
+        defer ticker.Stop()
         for {
-            time.Sleep(30 * time.Second)
-            ok := cc.monitor.getOKNum()
-            total := cc.monitor.getTotalNum()
-            if ok < total {
-                fmt.Printf("[WD] still running... %d/%d done (%.2f%%) after %s\n",
-                    ok, total, float64(ok)*100/float64(total), time.Since(start).Round(time.Second))
+            select {
+            case <-ticker.C:
+                ok := cc.monitor.getOKNum()
+                total := cc.monitor.getTotalNum()
+                if ok < total {
+                    fmt.Printf("[WD] still running... %d/%d done (%.2f%%) after %s\n",
+                        ok, total, float64(ok)*100/float64(total), time.Since(start).Round(time.Second))
+                }
+            case <-done:
+                return
             }
         }
     }()
 
-	for int64(completed) <= cc.cpOption.routines {
-		select {
-		case err := <-chListError:
-			if err != nil {
-				return err
-			}
-			completed++
-		case err := <-chError:
-			if err == nil {
-				completed++
-			} else {
-				ferr = err
-				if !cc.cpOption.ctnu {
-					cc.closeProgress()
-					fmt.Printf(cc.monitor.progressBar(true, errExit))
-					return err
-				}
-			}
-		}
-	}
-	return cc.formatResultPrompt(ferr)
-
+    for int64(completed) <= cc.cpOption.routines {
+        select {
+        case err := <-chListError:
+            if err != nil {
+                close(done)
+                return err
+            }
+            completed++
+        case err := <-chError:
+            if err == nil {
+                completed++
+            } else {
+                ferr = err
+                if !cc.cpOption.ctnu {
+                    cc.closeProgress()
+                    fmt.Printf(cc.monitor.progressBar(true, errExit))
+                    close(done)
+                    return err
+                }
+            }
+        }
+    }
+    close(done)
+    return cc.formatResultPrompt(ferr)
 }
+
 
 // function for copy objects
 func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
@@ -3436,7 +3463,6 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     if err != nil { return err }
     md, putHdr := cc.buildS3ObjectHeadersFromOSSHead(head)
 
-    // --- DEBUG: banner cho object lớn
     start := time.Now()
     fmt.Printf("[MPU-START] %s size=%d at %s\n", dstKey, size, time.Now().Format("15:04:05"))
 
@@ -3457,21 +3483,19 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     if partSize < 5*1024*1024 { partSize = 5 * 1024 * 1024 }
 
     type task struct{ num int32; start, end int64 }
+
     buf := workers * 4
     if buf < 64 { buf = 64 }
     tasks   := make(chan task, buf)
     results := make(chan s3types.CompletedPart, buf)
     errCh   := make(chan error, 1)
 
-    // --- DEBUG: biến đếm cho heartbeat
     totalParts := int32((size + partSize - 1) / partSize)
-    var enq int32       // số part đã enqueue
-    var done int32      // số part đã hoàn tất
-    var inflight int32  // part đang upload
-    var lastRecv int64  // UnixNano lần cuối có tiến triển
+    var enq, doneParts, inflight int32
+    var lastRecv int64
     atomic.StoreInt64(&lastRecv, time.Now().UnixNano())
 
-    // --- DEBUG: watchdog 30s/lần
+    // Watchdog in heartbeat 30s/lần
     go func() {
         tick := time.NewTicker(30 * time.Second)
         defer tick.Stop()
@@ -3481,7 +3505,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
                 return
             case <-tick.C:
                 e := atomic.LoadInt32(&enq)
-                d := atomic.LoadInt32(&done)
+                d := atomic.LoadInt32(&doneParts)
                 f := atomic.LoadInt32(&inflight)
                 lp := time.Since(time.Unix(0, atomic.LoadInt64(&lastRecv))).Round(time.Second)
                 fmt.Printf("[WD] %s parts total=%d enq=%d done=%d inflight=%d pending=%d elapsed=%s last_progress=%s\n",
@@ -3502,30 +3526,43 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
                     return
                 default:
                 }
-                atomic.AddInt32(&inflight, 1)                       // DEBUG
+                atomic.AddInt32(&inflight, 1)
                 cp, e := cc.uploadSinglePartWithRetry(ctx, cli, ossBucket,
                     srcKey, dstBucket, dstKey, uploadID, t.num, t.start, t.end)
-                atomic.AddInt32(&inflight, -1)                      // DEBUG
+                atomic.AddInt32(&inflight, -1)
                 if e != nil {
                     _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+                    // gửi lỗi 1 lần là đủ
                     select { case errCh <- e: default: }
                     return
                 }
-                atomic.AddInt32(&done, 1)                           // DEBUG
-                atomic.StoreInt64(&lastRecv, time.Now().UnixNano()) // DEBUG
-                results <- cp
+                atomic.AddInt32(&doneParts, 1)
+                atomic.StoreInt64(&lastRecv, time.Now().UnixNano())
+
+                // gửi kết quả có tôn trọng ctx để không block khi đã huỷ
+                select {
+                case results <- cp:
+                case <-ctx.Done():
+                    return
+                }
             }
         }()
     }
 
-    // Enqueue tasks
+    // Enqueue tasks (tôn trọng ctx)
     go func() {
         var num int32 = 1
         for off := int64(0); off < size; {
+            select {
+            case <-ctx.Done():
+                close(tasks)
+                return
+            default:
+            }
             end := off + partSize - 1
             if end >= size { end = size - 1 }
             tasks <- task{num: num, start: off, end: end}
-            atomic.AddInt32(&enq, 1) // DEBUG
+            atomic.AddInt32(&enq, 1)
             num++
             off = end + 1
         }
@@ -3534,18 +3571,23 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
         close(results)
     }()
 
-    // Collect + Complete
+    // Thu kết quả + Complete
     var completed []s3types.CompletedPart
     for {
         select {
         case e := <-errCh:
             if e != nil {
-                fmt.Printf("[MPU-FAIL] %s after %s: %v\n", dstKey, time.Since(start).Round(time.Second), e) // DEBUG
+                // huỷ context để chặn mọi worker/producer
+                cancel()
+                // DRain results để không block worker gửi kết quả
+                for range results {}
+                fmt.Printf("[MPU-FAIL] %s after %s: %v\n", dstKey, time.Since(start).Round(time.Second), e)
                 return e
             }
         case <-ctx.Done():
             _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
-            fmt.Printf("[MPU-CANCEL] %s after %s: %v\n", dstKey, time.Since(start).Round(time.Second), ctx.Err()) // DEBUG
+            for range results {} // drain
+            fmt.Printf("[MPU-CANCEL] %s after %s: %v\n", dstKey, time.Since(start).Round(time.Second), ctx.Err())
             return ctx.Err()
         case cp, ok := <-results:
             if !ok {
@@ -3562,10 +3604,10 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
                 })
                 if err == nil {
                     fmt.Printf("[MPU-END] %s done, dur=%s, parts=%d\n",
-                        dstKey, time.Since(start).Round(time.Second), totalParts) // DEBUG
+                        dstKey, time.Since(start).Round(time.Second), totalParts)
                 } else {
                     fmt.Printf("[MPU-END-ERROR] %s after %s: %v\n",
-                        dstKey, time.Since(start).Round(time.Second), err) // DEBUG
+                        dstKey, time.Since(start).Round(time.Second), err)
                 }
                 return err
             }
@@ -3573,6 +3615,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
         }
     }
 }
+
 
 
 
@@ -3636,7 +3679,12 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
         if err != nil {
             lastErr = err
             if i == maxTry { break }
-            time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
+            d := expBackoff(i, baseBackoff, maxBackoff)
+            select {
+            case <-time.After(d):
+            case <-ctx.Done():
+                return s3types.CompletedPart{}, ctx.Err()
+            }
             continue
         }
 
@@ -3645,7 +3693,12 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
             rc.Close()
             lastErr = err
             if i == maxTry { break }
-            time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
+            d := expBackoff(i, baseBackoff, maxBackoff)
+            select {
+            case <-time.After(d):
+            case <-ctx.Done():
+                return s3types.CompletedPart{}, ctx.Err()
+            }
             continue
         }
 
@@ -3657,17 +3710,26 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
             os.Remove(tmp.Name())
             lastErr = err
             if i == maxTry { break }
-            time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
+            d := expBackoff(i, baseBackoff, maxBackoff)
+            select {
+            case <-time.After(d):
+            case <-ctx.Done():
+                return s3types.CompletedPart{}, ctx.Err()
+            }
             continue
         }
 
-        // Seek về đầu để ReadSeeker
         if _, err = tmp.Seek(0, io.SeekStart); err != nil {
             tmp.Close()
             os.Remove(tmp.Name())
             lastErr = err
             if i == maxTry { break }
-            time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
+            d := expBackoff(i, baseBackoff, maxBackoff)
+            select {
+            case <-time.After(d):
+            case <-ctx.Done():
+                return s3types.CompletedPart{}, ctx.Err()
+            }
             continue
         }
 
@@ -3677,7 +3739,7 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
             Key:           aws.String(dstKey),
             UploadId:      aws.String(uploadID),
             PartNumber:    aws.Int32(partNum),
-            Body:          tmp, // ReadSeeker
+            Body:          tmp,
             ContentLength: aws.Int64(st.Size()),
         }
 
@@ -3694,11 +3756,17 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
 
         lastErr = upErr
         if i < maxTry {
-            time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
+            d := expBackoff(i, baseBackoff, maxBackoff)
+            select {
+            case <-time.After(d):
+            case <-ctx.Done():
+                return s3types.CompletedPart{}, ctx.Err()
+            }
         }
     }
     return s3types.CompletedPart{}, lastErr
 }
+
 
 // Abort MPU (helper giữ nguyên như bạn đã có, hoặc dùng hàm này)
 func (cc *CopyCommand) abortS3Multipart(cli *s3.Client, bucket, key, uploadID string) error {
@@ -3842,20 +3910,19 @@ func (cc *CopyCommand) ossResumeCopyRetry(bucketName, objectName, destBucketName
 func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudURL) error {
     cc.adjustSrcURLForCommand(&srcURL, cc.cpOption.bSyncCommand)
 
-    // >>> Prefetch index S3 đích để --update không phải HEAD
+    // Prefetch index S3 đích để --update không phải HEAD
     if cc.cpOption.update && cc.cpOption.recursive {
         if err := cc.prefetchS3DestIndex(destURL); err != nil {
-            // không fail job nếu prefetch lỗi: chỉ log để tiếp tục (fallback HEAD)
             LogError("[WARN] prefetchS3DestIndex failed: %v", err)
         } else {
             LogInfo("[DEBUG] Prefetched S3 dest index for %s/%s", destURL.bucket, destURL.object)
         }
     }
-    // <<<
 
     chObjects := make(chan objectInfoType, ChannelBuf)
     chError := make(chan error, cc.cpOption.routines)
     chListError := make(chan error, 1)
+
     go cc.objectStatistic(bucket, srcURL)
     go cc.objectProducer(bucket, srcURL, chObjects, chListError)
 
@@ -3863,9 +3930,10 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
         go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
     }
 
-
-    return cc.waitRoutinueComplete(chError, chListError, opDownload)
+    // sửa opDownload -> opCopy
+    return cc.waitRoutinueComplete(chError, chListError, opCopy)
 }
+
 
 
 func (cc *CopyCommand) copyConsumer(bucket *oss.Bucket, srcURL, destURL CloudURL, chObjects <-chan objectInfoType, chError chan<- error) {
