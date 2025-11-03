@@ -3924,20 +3924,20 @@ type destInfo struct {
 var s3ExistCache sync.Map
 
 // helper: lấy từ cache; nếu chưa có thì HEAD một lần rồi cache
-func (cc *CopyCommand) s3LookupCached(bucket, key string) (exists bool, lastMod time.Time, err error) {
-    ck := bucket + "\x00" + key
-    if v, ok := s3HeadCache.Load(ck); ok {
-        di := v.(destInfo)
-        return di.exists, di.lastMod, nil
-    }
-    // fallback: HEAD 1 lần
-    ex, lm, err := cc.s3HeadObject(bucket, key)
-    if err != nil {
-        return false, time.Time{}, err
-    }
-    s3HeadCache.Store(ck, destInfo{exists: ex, lastMod: lm, cached: true})
-    return ex, lm, nil
-}
+// func (cc *CopyCommand) s3LookupCached(bucket, key string) (exists bool, lastMod time.Time, err error) {
+//     ck := bucket + "\x00" + key
+//     if v, ok := s3HeadCache.Load(ck); ok {
+//         di := v.(destInfo)
+//         return di.exists, di.lastMod, nil
+//     }
+//     // fallback: HEAD 1 lần
+//     ex, lm, err := cc.s3HeadObject(bucket, key)
+//     if err != nil {
+//         return false, time.Time{}, err
+//     }
+//     s3HeadCache.Store(ck, destInfo{exists: ex, lastMod: lm, cached: true})
+//     return ex, lm, nil
+// }
 
 func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
     if dest.bucket == "" {
