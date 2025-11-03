@@ -2389,6 +2389,8 @@ func (cc *CopyCommand) report(msg string, err error) {
 	}
 }
 
+var lastDoneAt int64
+
 func (cc *CopyCommand) updateMonitor(skip bool, err error, isDir bool, size int64) {
 	if err != nil {
 		cc.monitor.updateErr(0, 1)
@@ -2403,7 +2405,19 @@ func (cc *CopyCommand) updateMonitor(skip bool, err error, isDir bool, size int6
 	} else {
 		cc.monitor.updateFile(size, 1)
 	}
+	if debugOn { fmt.Printf("[D][WAIT] got worker, completed=%d/%d\n", completed, need) }
 	freshProgress()
+}
+
+func (cc *CopyCommand) startHeartbeat() {
+    if !debugOn { return }
+    go func() {
+        for {
+            time.Sleep(10 * time.Second)
+            last := time.Unix(0, atomic.LoadInt64(&lastDoneAt))
+            fmt.Printf("[D][HB] last-done %v ago at %s\n", time.Since(last).Truncate(time.Second), time.Now().Format("15:04:05"))
+        }
+    }()
 }
 
 func (cc *CopyCommand) filterError(err error) bool {
@@ -2940,10 +2954,23 @@ func (cc *CopyCommand) downloadConsumer(bucket *oss.Bucket, filePath string, chO
 }
 
 func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, opStr string) error {
-	fmt.Printf("[DEBUG] [CLEANUP-BEGIN] waiting routines=%d at %s\n", cc.cpOption.routines, time.Now().Format("15:04:05"))
 
 	completed := 0
 	var ferr error
+	need := int(cc.cpOption.routines) + 1 // +1 cho chListError
+    lastTick := time.Now()
+
+	if debugOn {
+        go func() {
+            for {
+                time.Sleep(20 * time.Second)
+                if time.Since(lastTick) >= 20*time.Second {
+                    fmt.Printf("[D][WD] stall? completed=%d/%d at %s\n", completed, need, time.Now().Format("15:04:05"))
+                }
+            }
+        }()
+    }
+
 	for int64(completed) <= cc.cpOption.routines {
 		select {
 		case err := <-chListError:
@@ -2951,9 +2978,11 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
 				return err
 			}
 			completed++
+			if debugOn { fmt.Printf("[D][WAIT] got list goroutine, completed=%d/%d\n", completed, need) }
 		case err := <-chError:
 			if err == nil {
 				completed++
+				if debugOn { fmt.Printf("[D][WAIT] got worker, completed=%d/%d\n", completed, need) }
 			} else {
 				ferr = err
 				if !cc.cpOption.ctnu {
@@ -3087,6 +3116,7 @@ func (cc *CopyCommand) adjustRelativeKeyForDup(srcRelative, srcPrefix, destPrefi
 
 func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) (bool, error, int64, string) {
     srcObject := objectInfo.prefix + objectInfo.relativeKey
+	if debugOn { fmt.Printf("[D][OBJ] %s start %s\n", srcObject, start.Format("15:04:05")) }
     size := objectInfo.size
     srct := objectInfo.lastModified
 
@@ -3123,9 +3153,15 @@ func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoT
     // ĐÍCH S3 → dùng bridge
     if cc.cpOption.destIsS3 {
         if size < cc.cpOption.threshold {
-            return false, cc.bridgeCopyOSS2S3_Stream(bucket, srcURL.bucket, srcObject, destURL.bucket, destObject), size, msg
+			if debugOn { fmt.Printf("[D][OBJ] %s put(stream) begin\n", srcObject) }
+			err := cc.bridgeCopyOSS2S3_Stream(bucket, srcURL.bucket, srcObject, destURL.bucket, destObject)
+			if debugOn { fmt.Printf("[D][OBJ] %s put(stream) end, cost=%v\n", srcObject, time.Since(start)) }
+			return false, err, size, msg
         }
-        return false, cc.bridgeCopyOSS2S3_Multipart(bucket, srcURL.bucket, srcObject, size, destURL.bucket, destObject), size, msg
+		if debugOn { fmt.Printf("[D][OBJ] %s mpu begin\n", srcObject) }
+        err := cc.bridgeCopyOSS2S3_Multipart(bucket, srcURL.bucket, srcObject, size, destURL.bucket, destObject)
+        if debugOn { fmt.Printf("[D][OBJ] %s mpu end, cost=%v\n", srcObject, time.Since(start)) }
+        return false, err, size, msg
     }
 
     // ĐÍCH OSS thường
@@ -3820,17 +3856,29 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
 
 
 func (cc *CopyCommand) copyConsumer(bucket *oss.Bucket, srcURL, destURL CloudURL, chObjects <-chan objectInfoType, chError chan<- error) {
+	wid := fmt.Sprintf("%p", chObjects)
+    if debugOn { fmt.Printf("[D][WORKER-START] %s at %s\n", wid, time.Now().Format("15:04:05")) }
+	
 	for objectInfo := range chObjects {
+		if debugOn {
+            fmt.Printf("[D][WORKER %s] copy begin %s\n", wid, objectInfo.prefix+objectInfo.relativeKey)
+        }
 		err := cc.copySingleFileWithReport(bucket, objectInfo, srcURL, destURL)
 		if err != nil {
+			if debugOn { fmt.Printf("[D][WORKER %s] error: %v\n", wid, err) }
 			chError <- err
 			if !cc.cpOption.ctnu {
 				return
 			}
 			continue
 		}
+
+		if debugOn {
+            fmt.Printf("[D][WORKER %s] copy done  %s\n", wid, objectInfo.prefix+objectInfo.relativeKey)
+        }
 	}
 
+	if debugOn { fmt.Printf("[D][WORKER-END] %s at %s\n", wid, time.Now().Format("15:04:05")) }
 	chError <- nil
 }
 
@@ -4035,3 +4083,4 @@ func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
     return false, nil
 }
 
+var debugOn = os.Getenv("OSSUTIL_DEBUG") == "1"
