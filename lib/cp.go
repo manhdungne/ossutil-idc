@@ -2940,7 +2940,7 @@ func (cc *CopyCommand) downloadConsumer(bucket *oss.Bucket, filePath string, chO
 }
 
 func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, opStr string) error {
-	LogInfo("[CLEANUP-BEGIN] waiting routines=%d at %s", cc.cpOption.routines, time.Now().Format("15:04:05"))
+	fmt.Printf("[DEBUG] [CLEANUP-BEGIN] waiting routines=%d at %s\n", cc.cpOption.routines, time.Now().Format("15:04:05"))
 
 	completed := 0
 	var ferr error
@@ -2964,8 +2964,8 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
 			}
 		}
 	}
+	fmt.Printf("[DEBUG] [CLEANUP-END] prefix cleanup done at %s\n", time.Now().Format("15:04:05"))
 	return cc.formatResultPrompt(ferr)
-	LogInfo("[CLEANUP-END] prefix cleanup done at %s", time.Now().Format("15:04:05"))
 
 }
 
@@ -3788,7 +3788,7 @@ func (cc *CopyCommand) ossResumeCopyRetry(bucketName, objectName, destBucketName
 }
 
 func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudURL) error {
-	LogInfo("[PREFIX-START] %s at %s", srcURL.object, time.Now().Format("15:04:05"))
+	fmt.Printf("[DEBUG] [PREFIX-START] %s at %s\n", srcURL.object, time.Now().Format("15:04:05"))
 
     cc.adjustSrcURLForCommand(&srcURL, cc.cpOption.bSyncCommand)
 
@@ -3813,7 +3813,7 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
         go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
     }
 
-	LogInfo("[PREFIX-END-ENQUEUE] waiting all workers to finish for prefix %s (%s)", srcURL.object, time.Now().Format("15:04:05"))
+	fmt.Printf("[DEBUG] [PREFIX-END-ENQUEUE] waiting all workers to finish for prefix %s (%s)\n", srcURL.object, time.Now().Format("15:04:05"))
 
     return cc.waitRoutinueComplete(chError, chListError, opDownload)
 }
