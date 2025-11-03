@@ -2965,25 +2965,6 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
 
     done := make(chan struct{}) // báo watchdog dừng
 
-    // Watchdog in tiến độ định kỳ, dừng khi close(done)
-    go func() {
-        ticker := time.NewTicker(30 * time.Second)
-        defer ticker.Stop()
-        for {
-            select {
-            case <-ticker.C:
-                ok := cc.monitor.okNum
-				total := cc.monitor.totalNum
-                if ok < total {
-                    fmt.Printf("[WD] still running... %d/%d done (%.2f%%) after %s\n",
-                        ok, total, float64(ok)*100/float64(total), time.Since(start).Round(time.Second))
-                }
-            case <-done:
-                return
-            }
-        }
-    }()
-
     for int64(completed) <= cc.cpOption.routines {
         select {
         case err := <-chListError:
