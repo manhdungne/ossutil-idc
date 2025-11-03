@@ -2961,7 +2961,6 @@ func (cc *CopyCommand) downloadConsumer(bucket *oss.Bucket, filePath string, chO
 func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, opStr string) error {
     completed := 0
     var ferr error
-    start := time.Now()
 
     done := make(chan struct{}) // báo watchdog dừng
 
