@@ -2940,6 +2940,8 @@ func (cc *CopyCommand) downloadConsumer(bucket *oss.Bucket, filePath string, chO
 }
 
 func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, opStr string) error {
+	LogInfo("[CLEANUP-BEGIN] waiting routines=%d at %s", cc.cpOption.routines, time.Now().Format("15:04:05"))
+
 	completed := 0
 	var ferr error
 	for int64(completed) <= cc.cpOption.routines {
@@ -2963,6 +2965,8 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
 		}
 	}
 	return cc.formatResultPrompt(ferr)
+	LogInfo("[CLEANUP-END] prefix cleanup done at %s", time.Now().Format("15:04:05"))
+
 }
 
 // function for copy objects
@@ -3784,6 +3788,8 @@ func (cc *CopyCommand) ossResumeCopyRetry(bucketName, objectName, destBucketName
 }
 
 func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudURL) error {
+	LogInfo("[PREFIX-START] %s at %s", srcURL.object, time.Now().Format("15:04:05"))
+
     cc.adjustSrcURLForCommand(&srcURL, cc.cpOption.bSyncCommand)
 
     // >>> Prefetch index S3 đích để --update không phải HEAD
@@ -3806,6 +3812,8 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
     for i := 0; int64(i) < cc.cpOption.routines; i++ {
         go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
     }
+
+	LogInfo("[PREFIX-END-ENQUEUE] waiting all workers to finish for prefix %s (%s)", srcURL.object, time.Now().Format("15:04:05"))
 
     return cc.waitRoutinueComplete(chError, chListError, opDownload)
 }
