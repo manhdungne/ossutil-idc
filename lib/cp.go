@@ -2405,19 +2405,7 @@ func (cc *CopyCommand) updateMonitor(skip bool, err error, isDir bool, size int6
 	} else {
 		cc.monitor.updateFile(size, 1)
 	}
-	if debugOn { fmt.Printf("[D][WAIT] got worker, completed=%d/%d\n", completed, need) }
 	freshProgress()
-}
-
-func (cc *CopyCommand) startHeartbeat() {
-    if !debugOn { return }
-    go func() {
-        for {
-            time.Sleep(10 * time.Second)
-            last := time.Unix(0, atomic.LoadInt64(&lastDoneAt))
-            fmt.Printf("[D][HB] last-done %v ago at %s\n", time.Since(last).Truncate(time.Second), time.Now().Format("15:04:05"))
-        }
-    }()
 }
 
 func (cc *CopyCommand) filterError(err error) bool {
@@ -3115,7 +3103,8 @@ func (cc *CopyCommand) adjustRelativeKeyForDup(srcRelative, srcPrefix, destPrefi
 }
 
 func (cc *CopyCommand) copySingleFile(bucket *oss.Bucket, objectInfo objectInfoType, srcURL, destURL CloudURL) (bool, error, int64, string) {
-    srcObject := objectInfo.prefix + objectInfo.relativeKey
+    start := time.Now()
+	srcObject := objectInfo.prefix + objectInfo.relativeKey
 	if debugOn { fmt.Printf("[D][OBJ] %s start %s\n", srcObject, start.Format("15:04:05")) }
     size := objectInfo.size
     srct := objectInfo.lastModified
