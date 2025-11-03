@@ -20,6 +20,7 @@ import (
     "math/rand"
 	"syscall"
 	"net"
+	"sync/atomic"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
 	leveldb "github.com/syndtr/goleveldb/leveldb"
@@ -2971,8 +2972,8 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
         for {
             select {
             case <-ticker.C:
-                ok := cc.monitor.getOKNum()
-                total := cc.monitor.getTotalNum()
+                ok := cc.monitor.okNum
+				total := cc.monitor.totalNum
                 if ok < total {
                     fmt.Printf("[WD] still running... %d/%d done (%.2f%%) after %s\n",
                         ok, total, float64(ok)*100/float64(total), time.Since(start).Round(time.Second))
@@ -3546,7 +3547,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
                     return
                 }
             }
-        }()
+        }(w)
     }
 
     // Enqueue tasks (tôn trọng ctx)
