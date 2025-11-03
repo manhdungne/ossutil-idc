@@ -3939,46 +3939,64 @@ var s3ExistCache sync.Map
 //     return ex, lm, nil
 // }
 
+var (
+    s3IdxMu  sync.RWMutex
+    s3Index  = map[string]map[string]struct{}{} // bucket -> set(keys)
+    s3Done   = map[string][]string{}            // bucket -> các prefix đã prefetch đủ
+)
+
 func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
-    if dest.bucket == "" {
-        return fmt.Errorf("prefetchS3DestIndex: empty bucket")
-    }
     cli, err := cc.getS3Client()
-    if err != nil {
-        return err
-    }
+    if err != nil { return err }
 
-    delimiter := ""
-    if cc.cpOption.onlyCurrentDir {
-        delimiter = "/"
-    }
-
+    local := make(map[string]struct{}, 4096)
     in := &s3.ListObjectsV2Input{
         Bucket:  aws.String(dest.bucket),
         Prefix:  aws.String(dest.object),
         MaxKeys: aws.Int32(1000),
+        // ĐỪNG đặt Delimiter trừ khi bạn thật sự chỉ muốn “folder”; cần keys thực tế.
     }
-    if delimiter != "" {
-        in.Delimiter = aws.String(delimiter)
-    }
-
     for {
         out, err := cli.ListObjectsV2(context.Background(), in)
-        if err != nil {
-            return err
-        }
+        if err != nil { return err }
         for _, obj := range out.Contents {
-            k := aws.ToString(obj.Key)
-            s3ExistCache.Store(dest.bucket+"\x00"+k, destInfo{exists: true})
+            local[aws.ToString(obj.Key)] = struct{}{}
         }
         if aws.ToBool(out.IsTruncated) && out.NextContinuationToken != nil {
             in.ContinuationToken = out.NextContinuationToken
-        } else {
-            break
-        }
+        } else { break }
     }
+
+    s3IdxMu.Lock()
+    if s3Index[dest.bucket] == nil { s3Index[dest.bucket] = map[string]struct{}{} }
+    for k := range local { s3Index[dest.bucket][k] = struct{}{} }
+    s3Done[dest.bucket] = append(s3Done[dest.bucket], dest.object)
+    s3IdxMu.Unlock()
     return nil
 }
+
+func (cc *CopyCommand) s3ExistsCachedNoNet(bucket, key string) (bool, bool) {
+    // returns (exists, covered)
+    s3IdxMu.RLock()
+    if set, ok := s3Index[bucket]; ok {
+        if _, ok2 := set[key]; ok2 {
+            s3IdxMu.RUnlock()
+            return true, true // có và đã cover
+        }
+    }
+    // nếu key thuộc 1 prefix đã prefetch → coi miss là “không tồn tại”
+    if prefs, ok := s3Done[bucket]; ok {
+        for _, p := range prefs {
+            if strings.HasPrefix(key, p) {
+                s3IdxMu.RUnlock()
+                return false, true // đã cover prefix → không gọi mạng
+            }
+        }
+    }
+    s3IdxMu.RUnlock()
+    return false, false // chưa cover → tuỳ chọn fallback
+}
+
 
 
 //Hàm lấy S3 Client
@@ -3991,28 +4009,21 @@ func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
 
 // Trả về: exists, err
 func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
-    ck := bucket + "\x00" + key
-    if v, ok := s3ExistCache.Load(ck); ok {
-        return v.(destInfo).exists, nil
+    if ex, covered := cc.s3ExistsCachedNoNet(bucket, key); covered {
+        return ex, nil // KHÔNG gọi mạng
     }
-    // Fallback: LIST đúng 1 key với prefix = key
+    // chỉ fallback nếu prefix chưa prefetch (object nằm ngoài vùng đã index)
     cli, err := cc.getS3Client()
-    if err != nil {
-        return false, err
-    }
+    if err != nil { return false, err }
     out, err := cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
         Bucket:  aws.String(bucket),
         Prefix:  aws.String(key),
         MaxKeys: aws.Int32(1),
     })
-    if err != nil {
-        return false, err
-    }
-    exists := false
+    if err != nil { return false, err }
     if len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key {
-        exists = true
+        return true, nil
     }
-    // Cache kết quả (cả true/false – negative cache)
-    s3ExistCache.Store(ck, destInfo{exists: exists})
-    return exists, nil
+    return false, nil
 }
+
