@@ -3943,7 +3943,7 @@ func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
     if dest.bucket == "" {
         return fmt.Errorf("prefetchS3DestIndex: empty bucket")
     }
-    cli, err := cc.newS3Client()
+    cli, err := cc.getS3Client()
     if err != nil {
         return err
     }
