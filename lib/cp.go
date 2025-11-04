@@ -3583,22 +3583,18 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
                 sort.Slice(completed, func(i, j int) bool {
                     return aws.ToInt32(completed[i].PartNumber) < aws.ToInt32(completed[j].PartNumber)
                 })
-                _, err = cli.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
-                    Bucket:   aws.String(dstBucket),
-                    Key:      aws.String(dstKey),
-                    UploadId: aws.String(uploadID),
-                    MultipartUpload: &s3types.CompletedMultipartUpload{
-                        Parts: completed,
-                    },
-                })
-                if err == nil {
-                    fmt.Printf("[MPU-END] %s done, dur=%s, parts=%d\n",
-                        dstKey, time.Since(start).Round(time.Second), totalParts)
-                } else {
-                    fmt.Printf("[MPU-END-ERROR] %s after %s: %v\n",
-                        dstKey, time.Since(start).Round(time.Second), err)
-                }
-                return err
+                err = cc.completeMultipartWithProbe(ctx, cli, dstBucket, dstKey, uploadID, completed, size)
+				if err == nil {
+					fmt.Printf("[MPU-END] %s done, dur=%s, parts=%d\n",
+						dstKey, time.Since(start).Round(time.Second), totalParts)
+					return nil
+				}
+
+				// Nếu vẫn lỗi → cố gắng abort để dọn rác (bỏ qua lỗi abort)
+				_ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+				fmt.Printf("[MPU-END-ERROR] %s after %s: %v\n",
+					dstKey, time.Since(start).Round(time.Second), err)
+				return err
             }
             completed = append(completed, cp)
         }
@@ -4150,3 +4146,86 @@ func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
 }
 
 var debugOn = os.Getenv("OSSUTIL_DEBUG") == "1"
+
+func (cc *CopyCommand) safeHeadSize(ctx context.Context, cli *s3.Client, bucket, key string) (bool, int64, error) {
+    out, err := cli.HeadObject(ctx, &s3.HeadObjectInput{
+        Bucket: aws.String(bucket),
+        Key:    aws.String(key),
+    })
+    if err != nil {
+        var nfe *s3types.NotFound
+        if errors.As(err, &nfe) {
+            return false, 0, nil
+        }
+        low := strings.ToLower(err.Error())
+        if strings.Contains(low, "notfound") || strings.Contains(low, "404") {
+            return false, 0, nil
+        }
+        return false, 0, err
+    }
+    if out.ContentLength == nil {
+        return true, 0, nil
+    }
+    return true, aws.ToInt64(out.ContentLength), nil
+}
+
+func (cc *CopyCommand) completeMultipartWithProbe(
+    ctx context.Context,
+    cli *s3.Client,
+    bucket, key, uploadID string,
+    completed []s3types.CompletedPart,
+    expectSize int64,
+) error {
+    cfg := DefaultRetryConfig()
+    // Complete có thể chậm ⇒ backoff rộng hơn chút
+    cfg.BaseBackoff = 3 * time.Second
+    cfg.MaxBackoff  = 30 * time.Second
+    cfg.MaxAttempts = 4
+    cfg.OnRetry = func(attempt int, e error, sleep time.Duration) {
+        LogError("[Complete Retry] %s attempt %d: %v (sleep %v)", key, attempt, e, sleep)
+    }
+
+    // Sắp xếp parts trước khi complete
+    sort.Slice(completed, func(i, j int) bool {
+        return aws.ToInt32(completed[i].PartNumber) < aws.ToInt32(completed[j].PartNumber)
+    })
+
+    return DoWithRetry(ctx, cfg, func(attempt int) error {
+        // Trước khi complete lại, probe xem đã có object chưa (idempotency)
+        if ok, sz, herr := cc.safeHeadSize(ctx, cli, bucket, key); herr == nil && ok {
+            if expectSize <= 0 || sz == expectSize {
+                // coi như đã complete thành công ở lần trước
+                LogInfo("[Complete Probe] %s already exists (size=%d) → treat as success", key, sz)
+                return nil
+            }
+        }
+
+        // Complete với deadline riêng (tránh chờ vô hạn header)
+        ctxC, cancel := context.WithTimeout(ctx, 90*time.Second)
+        defer cancel()
+
+        _, err := cli.CompleteMultipartUpload(ctxC, &s3.CompleteMultipartUploadInput{
+            Bucket:   aws.String(bucket),
+            Key:      aws.String(key),
+            UploadId: aws.String(uploadID),
+            MultipartUpload: &s3types.CompletedMultipartUpload{
+                Parts: completed,
+            },
+        })
+        if err == nil {
+            return nil
+        }
+
+        // Nếu timeout, thử probe thêm lần nữa — có thể complete đã thành công phía server
+        if errors.Is(err, context.DeadlineExceeded) || isRetryable(err) {
+            if ok, sz, herr := cc.safeHeadSize(ctx, cli, bucket, key); herr == nil && ok {
+                if expectSize <= 0 || sz == expectSize {
+                    LogInfo("[Complete Probe-AfterTimeout] %s exists (size=%d) → success", key, sz)
+                    return nil
+                }
+            }
+            return err // cho DoWithRetry backoff + retry
+        }
+        return err
+    })
+}
