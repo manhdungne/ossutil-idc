@@ -3173,16 +3173,24 @@ func isS3URL(u CloudURL) bool {
 
 func (cc *CopyCommand) newS3Client() (*s3.Client, error) {
     tr := &http.Transport{
-        Proxy:                 http.ProxyFromEnvironment,
-        MaxIdleConns:          512,
-        MaxIdleConnsPerHost:   512,
-        MaxConnsPerHost:       0,
-        IdleConnTimeout:       90 * time.Second,
-        DisableCompression:    true,
-        TLSHandshakeTimeout:   10 * time.Second,
-        ExpectContinueTimeout: 1 * time.Second,
-    }
-    httpClient := &http.Client{Transport: tr, Timeout: 0}
+		Proxy: http.ProxyFromEnvironment,
+		// socket-level
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		// pool
+		MaxIdleConns:        512,
+		MaxIdleConnsPerHost: 512,
+		IdleConnTimeout:     90 * time.Second,
+		// đọc header phải xong trong X giây (tránh treo)
+		ResponseHeaderTimeout: 30 * time.Second,
+		DisableCompression:    true,
+	}
+	httpClient := &http.Client{Transport: tr} // Timeout=0 vì ta điều khiển bằng ctx per-call
+
 
     region, _ := GetString(OptionRegion, cc.command.options)
     if region == "" { region = "us-east-1" }
@@ -3649,22 +3657,33 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
 ) (s3types.CompletedPart, error) {
     const (
         maxTry      = 3
-        baseBackoff = time.Second * 2
-        maxBackoff  = time.Second * 15
+        baseBackoff = 2 * time.Second
+        maxBackoff  = 15 * time.Second
+        // ngưỡng băng thông tối thiểu mong đợi để tính timeout (≈1.5 MiB/s)
+        minThroughput = 1_500_000 // bytes/second
+        minTimeout    = 60 * time.Second
+        maxTimeout    = 10 * time.Minute
     )
+
+    size := end - start + 1
+    // timeout ~ size/minThroughput * 2 (room), kẹp [minTimeout, maxTimeout]
+    to := time.Duration((float64(size)/float64(minThroughput))*2.0) * time.Second
+    if to < minTimeout { to = minTimeout }
+    if to > maxTimeout { to = maxTimeout }
 
     var lastErr error
     for i := 1; i <= maxTry; i++ {
-        // 1) GET range từ OSS
-        rc, err := ossBucket.GetObject(srcKey, oss.Range(start, end))
+        // deadline riêng cho từng attempt
+        ctxPart, cancel := context.WithTimeout(ctx, to)
+
+        // 1) GET range từ OSS (cũng dùng ctxPart để không chờ vô hạn)
+        rc, err := ossBucket.GetObject(srcKey, oss.Range(start, end), oss.WithContext(ctxPart))
         if err != nil {
+            cancel()
             lastErr = err
-            if i == maxTry { break }
-            d := expBackoff(i, baseBackoff, maxBackoff)
-            select {
-            case <-time.After(d):
-            case <-ctx.Done():
-                return s3types.CompletedPart{}, ctx.Err()
+            if i < maxTry {
+                LogError("[Part %d] GET range retry %d/%d: %v", partNum, i, maxTry, err)
+                time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
             }
             continue
         }
@@ -3672,30 +3691,26 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
         tmp, err := ioutil.TempFile("", "oss2s3-part-*")
         if err != nil {
             rc.Close()
+            cancel()
             lastErr = err
-            if i == maxTry { break }
-            d := expBackoff(i, baseBackoff, maxBackoff)
-            select {
-            case <-time.After(d):
-            case <-ctx.Done():
-                return s3types.CompletedPart{}, ctx.Err()
+            if i < maxTry {
+                LogError("[Part %d] temp file retry %d/%d: %v", partNum, i, maxTry, err)
+                time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
             }
             continue
         }
 
-        // Stream OSS -> temp file
+        // copy OSS → temp
         _, err = io.Copy(tmp, rc)
         rc.Close()
         if err != nil {
             tmp.Close()
             os.Remove(tmp.Name())
+            cancel()
             lastErr = err
-            if i == maxTry { break }
-            d := expBackoff(i, baseBackoff, maxBackoff)
-            select {
-            case <-time.After(d):
-            case <-ctx.Done():
-                return s3types.CompletedPart{}, ctx.Err()
+            if i < maxTry {
+                LogError("[Part %d] copy retry %d/%d: %v", partNum, i, maxTry, err)
+                time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
             }
             continue
         }
@@ -3703,13 +3718,11 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
         if _, err = tmp.Seek(0, io.SeekStart); err != nil {
             tmp.Close()
             os.Remove(tmp.Name())
+            cancel()
             lastErr = err
-            if i == maxTry { break }
-            d := expBackoff(i, baseBackoff, maxBackoff)
-            select {
-            case <-time.After(d):
-            case <-ctx.Done():
-                return s3types.CompletedPart{}, ctx.Err()
+            if i < maxTry {
+                LogError("[Part %d] seek retry %d/%d: %v", partNum, i, maxTry, err)
+                time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
             }
             continue
         }
@@ -3724,11 +3737,13 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
             ContentLength: aws.Int64(st.Size()),
         }
 
-        upOut, upErr := cli.UploadPart(ctx, in)
+        upOut, upErr := cli.UploadPart(ctxPart, in) // dùng ctxPart: UploadPart có deadline
         tmp.Close()
         os.Remove(tmp.Name())
+        cancel()
 
         if upErr == nil {
+            // ok
             return s3types.CompletedPart{
                 ETag:       upOut.ETag,
                 PartNumber: aws.Int32(partNum),
@@ -3736,17 +3751,17 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
         }
 
         lastErr = upErr
-        if i < maxTry {
-            d := expBackoff(i, baseBackoff, maxBackoff)
-            select {
-            case <-time.After(d):
-            case <-ctx.Done():
-                return s3types.CompletedPart{}, ctx.Err()
-            }
+        // timeout hay lỗi mạng → retry
+        if i < maxTry && (errors.Is(upErr, context.DeadlineExceeded) || isRetryable(upErr)) {
+            LogError("[Part %d] UploadPart retry %d/%d: %v", partNum, i, maxTry, upErr)
+            time.Sleep(expBackoff(i, baseBackoff, maxBackoff))
+            continue
         }
+        break
     }
     return s3types.CompletedPart{}, lastErr
 }
+
 
 
 // Abort MPU (helper giữ nguyên như bạn đã có, hoặc dùng hàm này)
