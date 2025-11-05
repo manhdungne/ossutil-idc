@@ -93,6 +93,7 @@ type copyOptionType struct {
 	endTime           int64
 
 	destIsS3          bool
+	failedOutPath string
 }
 
 type filterOptionType struct {
@@ -1278,6 +1279,8 @@ type CopyCommand struct {
 	s3Once   sync.Once
     s3Client *s3.Client
     s3Err    error
+
+	failLog *FailCollector
 }
 
 var copyCommand = CopyCommand{
