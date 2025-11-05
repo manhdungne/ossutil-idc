@@ -3562,43 +3562,38 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
 
     // Thu kết quả + Complete
     var completed []s3types.CompletedPart
-    for {
-        select {
-        case e := <-errCh:
-            if e != nil {
-                // huỷ context để chặn mọi worker/producer
-                cancel()
-                // DRain results để không block worker gửi kết quả
-                for range results {}
-                fmt.Printf("[MPU-FAIL] %s after %s: %v\n", dstKey, time.Since(start).Round(time.Second), e)
-                return e
-            }
-        case <-ctx.Done():
-            _ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
-            for range results {} // drain
-            fmt.Printf("[MPU-CANCEL] %s after %s: %v\n", dstKey, time.Since(start).Round(time.Second), ctx.Err())
-            return ctx.Err()
-        case cp, ok := <-results:
-            if !ok {
-                sort.Slice(completed, func(i, j int) bool {
-                    return aws.ToInt32(completed[i].PartNumber) < aws.ToInt32(completed[j].PartNumber)
-                })
-                err = cc.completeMultipartWithProbe(ctx, cli, dstBucket, dstKey, uploadID, completed, size)
+	for {
+		select {
+		case e := <-errCh:
+			if e != nil {
+				// hủy context để chặn mọi worker/producer
+				cancel()
+				// drain results để không block worker gửi kết quả
+				for range results {}
+				return e
+			}
+
+		case <-ctx.Done():
+			_ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
+			for range results {} // drain
+			return ctx.Err()
+
+		case cp, ok := <-results:
+			if !ok {
+				sort.Slice(completed, func(i, j int) bool {
+					return aws.ToInt32(completed[i].PartNumber) < aws.ToInt32(completed[j].PartNumber)
+				})
+				err = cc.completeMultipartWithProbe(ctx, cli, dstBucket, dstKey, uploadID, completed, size)
 				if err == nil {
-					fmt.Printf("[MPU-END] %s done, dur=%s, parts=%d\n",
-						dstKey, time.Since(start).Round(time.Second), totalParts)
 					return nil
 				}
-
-				// Nếu vẫn lỗi → cố gắng abort để dọn rác (bỏ qua lỗi abort)
+				// nếu vẫn lỗi → cố gắng abort để dọn rác (bỏ qua lỗi abort)
 				_ = cc.abortS3Multipart(cli, dstBucket, dstKey, uploadID)
-				fmt.Printf("[MPU-END-ERROR] %s after %s: %v\n",
-					dstKey, time.Since(start).Round(time.Second), err)
 				return err
-            }
-            completed = append(completed, cp)
-        }
-    }
+			}
+			completed = append(completed, cp)
+		}
+	}
 }
 
 
