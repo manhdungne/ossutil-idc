@@ -2403,6 +2403,10 @@ func (cc *CopyCommand) report(msg string, err error) {
 	if cc.filterError(err) {
 		cc.cpOption.reporter.ReportError(fmt.Sprintf("%s error, info: %s", msg, err.Error()))
 		cc.cpOption.reporter.Prompt(err)
+
+		if cc.failLog != nil {
+			cc.failLog.Add(extractObjectPathForFail(msg))
+		}
 	}
 }
 
@@ -2494,6 +2498,12 @@ func (cc *CopyCommand) downloadFiles(srcURL CloudURL, destURL FileURL) error {
 func (cc *CopyCommand) formatResultPrompt(err error) error {
 	cc.closeProgress()
 	fmt.Printf(cc.monitor.progressBar(true, normalExit))
+	if cc.cpOption.failedOutPath != "" && cc.failLog != nil {
+		if werr := cc.failLog.FlushToFile(cc.cpOption.failedOutPath); werr != nil {
+			LogError("flush failed objects to file error: %v\n", werr)
+		}
+	}
+
 	if err != nil && cc.cpOption.ctnu {
 		return nil
 	}
@@ -3484,23 +3494,23 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     atomic.StoreInt64(&lastRecv, time.Now().UnixNano())
 
     // Watchdog in heartbeat 30s/lần
-    go func() {
-        tick := time.NewTicker(30 * time.Second)
-        defer tick.Stop()
-        for {
-            select {
-            case <-ctx.Done():
-                return
-            case <-tick.C:
-                e := atomic.LoadInt32(&enq)
-                d := atomic.LoadInt32(&doneParts)
-                f := atomic.LoadInt32(&inflight)
-                lp := time.Since(time.Unix(0, atomic.LoadInt64(&lastRecv))).Round(time.Second)
-                fmt.Printf("[WD] %s parts total=%d enq=%d done=%d inflight=%d pending=%d elapsed=%s last_progress=%s\n",
-                    dstKey, totalParts, e, d, f, int(e-d), time.Since(start).Round(time.Second), lp)
-            }
-        }
-    }()
+    // go func() {
+    //     tick := time.NewTicker(30 * time.Second)
+    //     defer tick.Stop()
+    //     for {
+    //         select {
+    //         case <-ctx.Done():
+    //             return
+    //         case <-tick.C:
+    //             e := atomic.LoadInt32(&enq)
+    //             d := atomic.LoadInt32(&doneParts)
+    //             f := atomic.LoadInt32(&inflight)
+    //             lp := time.Since(time.Unix(0, atomic.LoadInt64(&lastRecv))).Round(time.Second)
+    //             fmt.Printf("[WD] %s parts total=%d enq=%d done=%d inflight=%d pending=%d elapsed=%s last_progress=%s\n",
+    //                 dstKey, totalParts, e, d, f, int(e-d), time.Since(start).Round(time.Second), lp)
+    //         }
+    //     }
+    // }()
 
     // Worker pool
     var wg sync.WaitGroup
@@ -4254,4 +4264,72 @@ func FixedDelayRetryConfig() RetryConfig {
         BaseBackoff: d,
         MaxBackoff:  d, // = fixed delay
     }
+}
+
+type FailCollector struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (fc *FailCollector) Add(line string) {
+	if line == "" { return }
+	fc.mu.Lock()
+	fc.lines = append(fc.lines, line)
+	fc.mu.Unlock()
+}
+
+func (fc *FailCollector) Reset() {
+	fc.mu.Lock()
+	fc.lines = nil
+	fc.mu.Unlock()
+}
+
+func (fc *FailCollector) FlushToFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if len(fc.lines) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	body := strings.Join(fc.lines, "\n") + "\n"
+	return os.WriteFile(path, []byte(body), 0644)
+}
+
+func extractObjectPathForFail(msg string) string {
+	// format điển hình: "<op> <A> to <B>"
+	//   - copy/upload: lấy B (đích) → object path
+	//   - download:    lấy A (nguồn) → object path
+	s := strings.TrimSpace(msg)
+	i := strings.IndexByte(s, ' ')
+	if i < 0 {
+		return s
+	}
+	op := s[:i]
+	rest := strings.TrimSpace(s[i+1:])
+
+	switch op {
+	case opDownload:
+		// download <oss://bucket/key> to </local/path>
+		if j := strings.Index(rest, " to "); j >= 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+		return rest
+	case opUpload, opCopy:
+		// upload/copy <src> to <dest>
+		if j := strings.LastIndex(rest, " to "); j >= 0 {
+			return strings.TrimSpace(rest[j+4:])
+		}
+		return rest
+	default:
+		// fallback: cố lấy phần sau " to "
+		if j := strings.LastIndex(rest, " to "); j >= 0 {
+			return strings.TrimSpace(rest[j+4:])
+		}
+		return rest
+	}
 }
