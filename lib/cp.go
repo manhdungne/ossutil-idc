@@ -3243,11 +3243,11 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
 	defer cancel()
 
-	cfg := DefaultRetryConfig()
+	cfg := FixedDelayRetryConfig()
 	cfg.OnRetry = func(attempt int, e error, sleep time.Duration) {
-		LogError("[PutObject Retry] %s -> %s attempt %d: %v (sleep %v)",
-			srcKey, dstKey, attempt, e, sleep)
-	}
+    LogError("[PutObject Retry] %s -> %s attempt %d: %v (sleep %v)",
+        srcKey, dstKey, attempt, e, sleep)
+}
 
 	// 3) Bọc retry: MỖI attempt mở lại rc từ OSS
 	return DoWithRetry(ctx, cfg, func(attempt int) error {
@@ -3426,10 +3426,10 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Multipart(
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 
-	cfg := DefaultRetryConfig()
+	cfg := FixedDelayRetryConfig()
 	cfg.OnRetry = func(attempt int, e error, sleep time.Duration) {
-		LogError("[MPU Retry] %s -> %s attempt %d: %v (sleep %v)",
-			srcKey, dstKey, attempt, e, sleep)
+    LogError("[PutObject Retry] %s -> %s attempt %d: %v (sleep %v)",
+        srcKey, dstKey, attempt, e, sleep)
 	}
 
 	return DoWithRetry(ctx, cfg, func(attempt int) error {
@@ -4228,4 +4228,36 @@ func (cc *CopyCommand) completeMultipartWithProbe(
         }
         return err
     })
+}
+
+// ==== thêm vào chỗ khai báo RetryConfig / helper ====
+
+// Lấy số giây delay giữa các lần retry (mặc định 300s = 5 phút)
+func retryDelay() time.Duration {
+    if v := os.Getenv("OSSUTIL_RETRY_WAIT_SEC"); v != "" {
+        if n, err := strconv.Atoi(v); err == nil && n > 0 {
+            return time.Duration(n) * time.Second
+        }
+    }
+    return 5 * time.Minute
+}
+
+// Lấy số lần retry tối đa (mặc định 3)
+func retryAttempts() int {
+    if v := os.Getenv("OSSUTIL_RETRY_ATTEMPTS"); v != "" {
+        if n, err := strconv.Atoi(v); err == nil && n > 0 {
+            return n
+        }
+    }
+    return 3
+}
+
+// Cấu hình retry với delay cố định (không backoff tăng dần)
+func FixedDelayRetryConfig() RetryConfig {
+    d := retryDelay()
+    return RetryConfig{
+        MaxAttempts: retryAttempts(),
+        BaseBackoff: d,
+        MaxBackoff:  d, // = fixed delay
+    }
 }
