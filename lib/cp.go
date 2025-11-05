@@ -3453,7 +3453,6 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     md, putHdr := cc.buildS3ObjectHeadersFromOSSHead(head)
 
     start := time.Now()
-    fmt.Printf("[MPU-START] %s size=%d at %s\n", dstKey, size, time.Now().Format("15:04:05"))
 
     ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
     defer cancel()
