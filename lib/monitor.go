@@ -3,6 +3,7 @@ package lib
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -54,7 +55,10 @@ type Monitor struct {
 	seekAheadError error
 	seekAheadEnd   bool
 	finish         bool
+	lastSnapTime   time.Time
 	_              uint32 //Add padding to make sure the next data 64bits alignment
+	mu             sync.RWMutex
+    currentByWID   map[int]string // workerID -> object đang xử lý
 }
 
 func (m *Monitor) init(opStr string) {
@@ -66,6 +70,7 @@ func (m *Monitor) init(opStr string) {
 	m.errNum = 0
 	m.skipNum = 0
 	m.finish = false
+	m.currentByWID = make(map[int]string)
 }
 
 func (m *Monitor) setScanError(err error) {
@@ -98,6 +103,40 @@ func (m *Monitor) getSnapshot() *MonitorSnap {
 	return &snap
 }
 
+// Set tên object đang xử lý cho worker wid
+func (m *CPMonitor) SetCurrent(wid int, name string) {
+    m.mu.Lock()
+    m.currentByWID[wid] = name
+    m.mu.Unlock()
+}
+
+// Xoá trạng thái current của worker wid
+func (m *CPMonitor) ClearCurrent(wid int) {
+    m.mu.Lock()
+    delete(m.currentByWID, wid)
+    m.mu.Unlock()
+}
+
+// Lấy danh sách current (tối đa max mục) để in ra
+func (m *CPMonitor) snapshotCurrents(max int) []string {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    res := make([]string, 0, len(m.currentByWID))
+    for _, v := range m.currentByWID {
+        // rút gọn chuỗi quá dài cho gọn màn hình
+        const maxLen = 120
+        if len(v) > maxLen {
+            v = v[:maxLen-3] + "..."
+        }
+        res = append(res, v)
+        if max > 0 && len(res) >= max {
+            break
+        }
+    }
+    return res
+}
+
+
 func (m *Monitor) progressBar(finish bool, exitStat int) string {
 	if m.finish {
 		return ""
@@ -109,20 +148,50 @@ func (m *Monitor) progressBar(finish bool, exitStat int) string {
 	return m.getFinishBar(exitStat)
 }
 
-func (m *Monitor) getProgressBar() string {
-	snap := m.getSnapshot()
-	if m.seekAheadEnd && m.seekAheadError == nil {
-		if snap.errNum == 0 {
-			return getClearStr(fmt.Sprintf("Total %d objects. %s %d objects, Progress: %d%s", m.totalNum, m.opStr, snap.okNum, m.getPrecent(snap), "%%"))
-		}
-		return getClearStr(fmt.Sprintf("Total %d objects. %s %d objects, Error %d objects, Progress: %d%s", m.totalNum, m.opStr, snap.okNum, snap.errNum, m.getPrecent(snap), "%%"))
-	}
-	scanNum := max(m.totalNum, snap.dealNum)
-	if snap.errNum == 0 {
-		return getClearStr(fmt.Sprintf("Scanned %d objects. %s %d objects.", scanNum, m.opStr, snap.okNum))
-	}
-	return getClearStr(fmt.Sprintf("Scanned %d objects. %s %d objects, Error %d objects.", scanNum, m.opStr, snap.okNum, snap.errNum))
+func (m *CPMonitor) getProgressBar() string {
+    mu.RLock()
+    defer mu.RUnlock()
+
+    snap := m.getSnapshot()
+    if snap.duration < m.tickDuration {
+        return ""
+    } else {
+        m.lastSnapTime = time.Now()
+        snap.incrementSize = m.transferSize - m.lastSnapSize
+        m.lastSnapSize = snap.transferSize
+    }
+
+    // lấy danh sách current (tối đa 3 mục cho gọn)
+    currents := m.snapshotCurrents(3)
+    curStr := ""
+    if len(currents) > 0 {
+        curStr = " Current: " + strings.Join(currents, " | ")
+    }
+
+    if m.seekAheadEnd && m.seekAheadError == nil {
+        base := fmt.Sprintf(
+            "Total num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%s, Speed: %.2fKB/s%s",
+            m.totalNum, getSizeString(m.totalSize),
+            snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
+            m.getPrecent(snap), "%%",
+            m.getSpeed(snap),
+            curStr,
+        )
+        return getClearStr(base)
+    }
+
+    scanNum := max(m.totalNum, snap.dealNum)
+    scanSize := max(m.totalSize, snap.dealSize)
+    base := fmt.Sprintf(
+        "Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.%s",
+        scanNum, getSizeString(scanSize),
+        snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
+        m.getSpeed(snap),
+        curStr,
+    )
+    return getClearStr(base)
 }
+
 
 func (m *Monitor) getPrecent(snap *MonitorSnap) int {
 	if m.seekAheadEnd && m.seekAheadError == nil {

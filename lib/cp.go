@@ -1468,6 +1468,22 @@ func (cc *CopyCommand) RunCommand() error {
 
 	LogInfo("[DEBUG] Final: destIsS3=%t, opType=%d (0=PUT, 1=GET, 2=COPY)", cc.cpOption.destIsS3, opType)
 
+	// Nếu user KHÔNG truyền --failed-out thì tự build tên file theo dest/src & opType
+	if cc.cpOption.failedOutPath == "" {
+		cc.cpOption.failedOutPath = cc.buildDefaultFailPathForCmd(srcURLList, destURL, opType)
+	}
+
+	// Tạo FailCollector: autoSyncN=20 nghĩa là mỗi 20 dòng sẽ fsync 1 lần.
+	// Bạn có thể thay đổi số này, hoặc lấy từ ENV/flag riêng.
+	fc, err := NewFailCollector(cc.cpOption.failedOutPath, 20)
+	if err != nil {
+		LogError("[WARN] cannot open fail file %s: %v", cc.cpOption.failedOutPath, err)
+	} else {
+		cc.failLog = fc
+		LogInfo("[INFO] Fail list path: %s", cc.cpOption.failedOutPath)
+		// Đảm bảo đóng file khi lệnh kết thúc (kể cả lỗi sớm)
+		defer cc.failLog.Close()
+	}
 
 	cc.cpOption.options = []oss.Option{}
 	if cc.cpOption.meta != "" {
@@ -2501,11 +2517,6 @@ func (cc *CopyCommand) downloadFiles(srcURL CloudURL, destURL FileURL) error {
 func (cc *CopyCommand) formatResultPrompt(err error) error {
 	cc.closeProgress()
 	fmt.Printf(cc.monitor.progressBar(true, normalExit))
-	if cc.cpOption.failedOutPath != "" && cc.failLog != nil {
-		if werr := cc.failLog.FlushToFile(cc.cpOption.failedOutPath); werr != nil {
-			LogError("flush failed objects to file error: %v\n", werr)
-		}
-	}
 
 	if err != nil && cc.cpOption.ctnu {
 		return nil
@@ -3034,6 +3045,10 @@ func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
 		}
 
 		go cc.objectStatistic(bucket, srcURL)
+		wid := 0 // dùng 0 cho single
+		cc.monitor.SetCurrent(wid, "<src> -> <dest>")
+		// ... gọi hàm thực thi ...
+		cc.monitor.ClearCurrent(wid)
 		err := cc.copySingleFileWithReport(bucket, objectInfoType{prefix, relativeKey, -1, time.Now()}, srcURL, destURL)
 		return cc.formatResultPrompt(err)
 	}
@@ -3260,7 +3275,7 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
 	cfg.OnRetry = func(attempt int, e error, sleep time.Duration) {
     LogError("[PutObject Retry] %s -> %s attempt %d: %v (sleep %v)",
         srcKey, dstKey, attempt, e, sleep)
-}
+	}
 
 	// 3) Bọc retry: MỖI attempt mở lại rc từ OSS
 	return DoWithRetry(ctx, cfg, func(attempt int) error {
@@ -3909,7 +3924,7 @@ func (cc *CopyCommand) ossResumeCopyRetry(bucketName, objectName, destBucketName
 func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudURL) error {
     cc.adjustSrcURLForCommand(&srcURL, cc.cpOption.bSyncCommand)
 
-    // Prefetch index S3 đích để --update không phải HEAD
+    // List hàng loạt keys ở prefix đích trên S3 trước -> giảm HEAD
     if cc.cpOption.update && cc.cpOption.recursive {
         if err := cc.prefetchS3DestIndex(destURL); err != nil {
             LogError("[WARN] prefetchS3DestIndex failed: %v", err)
@@ -3918,14 +3933,15 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
         }
     }
 
-    chObjects := make(chan objectInfoType, ChannelBuf)
-    chError := make(chan error, cc.cpOption.routines)
-    chListError := make(chan error, 1)
+    chObjects := make(chan objectInfoType, ChannelBuf) // Hàng đợi object để copy
+    chError := make(chan error, cc.cpOption.routines) // Lỗi từ các worker
+    chListError := make(chan error, 1) // Lỗi lúc liệt kê
 
-    go cc.objectStatistic(bucket, srcURL)
-    go cc.objectProducer(bucket, srcURL, chObjects, chListError)
+    go cc.objectStatistic(bucket, srcURL) // Thống kê
+    go cc.objectProducer(bucket, srcURL, chObjects, chListError) // LIST thực sự theo srcURL.object và đẩy từng object vào chObjects cho workers xử lý
 
     for i := 0; int64(i) < cc.cpOption.routines; i++ {
+		wid := i
         go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
     }
 
@@ -3935,21 +3951,39 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
 
 
 
-func (cc *CopyCommand) copyConsumer(bucket *oss.Bucket, srcURL, destURL CloudURL, chObjects <-chan objectInfoType, chError chan<- error) {
-	for objectInfo := range chObjects {
+func (cc *CopyCommand) copyConsumer(
+    wid int,
+    bucket *oss.Bucket, srcURL, destURL CloudURL,
+    chObjects <-chan objectInfoType, chError chan<- error,
+) {
+    for objectInfo := range chObjects {
+        // xây chuỗi hiển thị
+        srcObject := objectInfo.prefix + objectInfo.relativeKey
+        dstObject := cc.makeCopyObjectName(
+            cc.adjustRelativeKeyForDup(objectInfo.relativeKey, srcURL.object, destURL.object),
+            destURL.object,
+        )
+        cc.monitor.SetCurrent(wid, fmt.Sprintf("%s -> %s",
+            CloudURLToString(srcURL.bucket, srcObject),
+            CloudURLToString(destURL.bucket, dstObject),
+        ))
+
+        wid := 0 // dùng 0 cho single
+		cc.monitor.SetCurrent(wid, "<src> -> <dest>")
+		// ... gọi hàm thực thi ...
+		cc.monitor.ClearCurrent(wid)
 		err := cc.copySingleFileWithReport(bucket, objectInfo, srcURL, destURL)
-		if err != nil {
-			chError <- err
-			if !cc.cpOption.ctnu {
-				return
-			}
-			continue
-		}
 
-	}
-
-	chError <- nil
+        cc.monitor.ClearCurrent(wid)
+        if err != nil {
+            chError <- err
+            if !cc.cpOption.ctnu { return }
+            continue
+        }
+    }
+    chError <- nil
 }
+
 
 // parse "s3://bucket[/key]" thành CloudURL tối thiểu
 func parseS3CloudURL(s string) (CloudURL, error) {
@@ -4256,7 +4290,7 @@ func retryAttempts() int {
             return n
         }
     }
-    return 3
+    return 5
 }
 
 // Cấu hình retry với delay cố định (không backoff tăng dần)
@@ -4270,38 +4304,56 @@ func FixedDelayRetryConfig() RetryConfig {
 }
 
 type FailCollector struct {
-	mu    sync.Mutex
-	lines []string
+    mu         sync.Mutex
+    f          *os.File
+    w          *bufio.Writer
+    autoSyncN  int   // mỗi N dòng thì fsync 1 lần (0 = never)
+    wroteLines int
+}
+
+// path là đường dẫn file cần ghi (có thể gồm thư mục con)
+// autoSyncN: ví dụ 20 → 20 dòng fsync 1 lần; 0 → không fsync
+func NewFailCollector(path string, autoSyncN int) (*FailCollector, error) {
+    if path == "" {
+        return &FailCollector{}, nil // chế độ tắt
+    }
+    if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+        return nil, err
+    }
+    f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    if err != nil {
+        return nil, err
+    }
+    return &FailCollector{
+        f:        f,
+        w:        bufio.NewWriterSize(f, 64<<10), // 64KB buffer
+        autoSyncN: autoSyncN,
+    }, nil
 }
 
 func (fc *FailCollector) Add(line string) {
-	if line == "" { return }
-	fc.mu.Lock()
-	fc.lines = append(fc.lines, line)
-	fc.mu.Unlock()
+    if line == "" || fc.w == nil { return }
+    fc.mu.Lock()
+    _, _ = fc.w.WriteString(line)
+    _ = fc.w.WriteByte('\n')
+    _ = fc.w.Flush() // flush để "thấy ngay" trên đĩa (ở mức OS buffer)
+    fc.wroteLines++
+    if fc.autoSyncN > 0 && fc.wroteLines%fc.autoSyncN == 0 {
+        _ = fc.f.Sync() // đảm bảo persist thật sự (đổi thành thưa hơn nếu IO nhiều)
+    }
+    fc.mu.Unlock()
 }
 
-func (fc *FailCollector) Reset() {
-	fc.mu.Lock()
-	fc.lines = nil
-	fc.mu.Unlock()
+func (fc *FailCollector) Close() error {
+    fc.mu.Lock()
+    defer fc.mu.Unlock()
+    if fc.w != nil { _ = fc.w.Flush() }
+    if fc.f != nil { return fc.f.Close() }
+    return nil
 }
 
-func (fc *FailCollector) FlushToFile(path string) error {
-	if path == "" {
-		return nil
-	}
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
-	if len(fc.lines) == 0 {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	body := strings.Join(fc.lines, "\n") + "\n"
-	return os.WriteFile(path, []byte(body), 0644)
-}
+// Giữ lại FlushToFile cho tương thích ngược (không dùng nữa)
+func (fc *FailCollector) FlushToFile(_ string) error { return nil }
 
 func extractObjectPathForFail(msg string) string {
 	// format điển hình: "<op> <A> to <B>"
@@ -4335,4 +4387,45 @@ func extractObjectPathForFail(msg string) string {
 		}
 		return rest
 	}
+}
+
+const DefaultOutputDir = "ossutil_output"
+
+func sanitizeObjectForFlatName(obj string) string {
+    obj = strings.Trim(obj, "/")
+    if obj == "" { return "" }
+    return strings.ReplaceAll(obj, "/", "_")
+}
+
+func failFlatFileName(c CloudURL) string {
+    base := c.bucket
+    if obj := sanitizeObjectForFlatName(c.object); obj != "" {
+        base += "_" + obj
+    }
+    return base
+}
+
+func (cc *CopyCommand) defaultFailBaseDir() string {
+    outDir, _ := GetString(OptionOutputDir, cc.command.options)
+    if outDir == "" { outDir = DefaultOutputDir }
+    return outDir
+}
+
+// op: PUT/GET/COPY → chọn URL để suy ra tên file
+func (cc *CopyCommand) buildDefaultFailPathForCmd(srcs []StorageURLer, dest StorageURLer, op operationType) string {
+    outDir := cc.defaultFailBaseDir()
+    _ = os.MkdirAll(outDir, 0755)
+    switch op {
+    case operationTypePut, operationTypeCopy:
+        if cu, ok := dest.(CloudURL); ok {
+            return filepath.Join(outDir, failFlatFileName(cu))
+        }
+    case operationTypeGet:
+        if len(srcs) > 0 {
+            if cu, ok := srcs[0].(CloudURL); ok {
+                return filepath.Join(outDir, failFlatFileName(cu))
+            }
+        }
+    }
+    return filepath.Join(outDir, "failed.list")
 }
