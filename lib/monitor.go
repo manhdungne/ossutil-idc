@@ -550,9 +550,6 @@ func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
 }
 
 func (m *CPMonitor) getProgressBar() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
 	snap := m.getSnapshot()
 
 	// throttle theo tickDuration
