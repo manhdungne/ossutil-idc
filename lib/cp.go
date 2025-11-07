@@ -1744,7 +1744,6 @@ func (cc *CopyCommand) progressBar() {
     }
 }
 
-}
 
 
 func (cc *CopyCommand) closeProgress() {
