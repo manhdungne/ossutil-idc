@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"os"
+    "golang.org/x/term"
 )
 
 const (
@@ -741,6 +743,8 @@ func truncate(s string) string {
     if len(s) <= max {
         return s
     }
-    return s[:max-3] + "..."
+    if max > 3 {
+        return s[:max-3] + "..."
+    }
+    return s[:max]
 }
-
