@@ -796,45 +796,6 @@ func (m *CPMonitor) composeProgressLine(base string, currents []string) string {
     return b.String()
 }
 
-type progressRenderer struct {
-	prevRows int // số dòng đã vẽ kỳ trước
-}
-
-// lấy bề rộng terminal (stderr)
-func termWidth() int {
-	w, _, err := term.GetSize(int(os.Stderr.Fd()))
-	if err != nil || w <= 0 {
-		return 120
-	}
-	// chừa 2 ký tự tránh wrap mép phải
-	if w > 2 {
-		return w - 2
-	}
-	return w
-}
-
-// cắt chuỗi theo độ rộng, ưu tiên tách ở khoảng trắng; fallback cắt cứng
-func wrapToWidth(s string, width int) []string {
-	if width <= 0 || len(s) == 0 {
-		return []string{""}
-	}
-	var lines []string
-	for len(s) > 0 {
-		if displayWidth(s) <= width {
-			lines = append(lines, s)
-			break
-		}
-		// tìm vị trí tách tốt trong khoảng [0:width]
-		cut := softCutIndex(s, width)
-		lines = append(lines, strings.TrimRight(s[:cut], " "))
-		s = strings.TrimLeft(s[cut:], " ")
-	}
-	if len(lines) == 0 {
-		return []string{""}
-	}
-	return lines
-}
-
 // đếm “độ rộng hiển thị” (giản lược: đếm rune; đủ tốt nếu không dùng ANSI màu)
 func displayWidth(s string) int {
 	return utf8.RuneCountInString(s)
@@ -885,9 +846,42 @@ func byteIndexAfterRunes(s string, n int) int {
 	return len(s)
 }
 
-// render “khối dòng” không sinh lịch sử mới.
-// - lines: nội dung đã wrap theo terminal width
-// - Xóa sạch phần thừa nếu lần trước có nhiều dòng hơn.
+type progressRenderer struct {
+	prevRows int // số dòng đã vẽ ở tick trước
+}
+
+// Lấy độ rộng terminal cho stderr
+func termWidth() int {
+	w, _, err := term.GetSize(int(os.Stderr.Fd()))
+	if err != nil || w <= 0 {
+		return 120
+	}
+	// chừa 2 ký tự để tránh wrap ở mép phải
+	return w - 2
+}
+
+// Wrap 1 chuỗi dài thành nhiều dòng theo width (không sinh \n ở giữa dòng)
+func wrapToWidth(s string, width int) []string {
+	if width <= 4 {
+		if len(s) == 0 {
+			return []string{""}
+		}
+		if len(s) <= width {
+			return []string{s}
+		}
+		return []string{s[:width-3] + "..."}
+	}
+	lines := []string{}
+	for len(s) > width {
+		lines = append(lines, s[:width])
+		s = s[width:]
+	}
+	lines = append(lines, s)
+	return lines
+}
+
+// Render khối progress: vẽ đủ max(prevRows, curRows) và xoá phần thừa.
+// Trả lại chuỗi escape; bạn chỉ việc io.WriteString(os.Stderr, render(...))
 func (r *progressRenderer) render(lines []string) string {
 	if len(lines) == 0 {
 		lines = []string{""}
@@ -900,53 +894,59 @@ func (r *progressRenderer) render(lines []string) string {
 
 	var b strings.Builder
 
-	// 1) đưa con trỏ về **đầu khối cũ** (đầu dòng trên cùng)
+	// 1) Đưa con trỏ về đầu khối cũ
 	if r.prevRows > 0 {
-		// về đầu dòng hiện tại rồi đi lên prevRows-1 dòng
 		b.WriteString("\r")
 		if r.prevRows > 1 {
 			b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
 		}
 	}
 
-	// 2) vẽ/xoá đủ maxRows dòng
+	// 2) Xoá mọi thứ từ vị trí con trỏ đến cuối màn hình (phòng rác do wrap)
+	b.WriteString("\x1b[0J")
+
+	// 3) Vẽ/xoá đủ maxRows dòng
 	for i := 0; i < maxRows; i++ {
-		// xóa cả dòng
-		b.WriteString("\r\x1b[2K")
+		b.WriteString("\r\x1b[2K") // xoá sạch dòng
 		if i < curRows {
-			// in dòng mới
 			b.WriteString(lines[i])
 		}
-		// xuống dòng giữa các dòng trong khối
 		if i < maxRows-1 {
 			b.WriteByte('\n')
 		}
 	}
 
-	// 3) đưa con trỏ về **đầu khối mới** để tick sau vẽ đè tiếp
+	// 4) Đưa con trỏ về đầu khối để tick sau đè tiếp
 	if maxRows > 1 {
 		b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
 	} else {
 		b.WriteString("\r")
 	}
 
-	// cập nhật số dòng đã vẽ
 	r.prevRows = curRows
 	return b.String()
 }
 
-
-// gọi khi kết thúc để “chốt” khối thành lịch sử (in xuống dòng)
+// Kết thúc progress: xoá khối và xuống hẳn 1 dòng
 func (r *progressRenderer) finalize() string {
-	if r.prevRows <= 0 {
+	if r.prevRows == 0 {
 		return ""
 	}
-	// di xuống cuối khối rồi xuống thêm 1 dòng để “chốt” lịch sử
 	var b strings.Builder
+	// về đầu khối
+	b.WriteString("\r")
 	if r.prevRows > 1 {
-		b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1)) // move cursor down
+		b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
 	}
-	b.WriteByte('\n')
+	// xoá khối
+	for i := 0; i < r.prevRows; i++ {
+		b.WriteString("\r\x1b[2K")
+		if i < r.prevRows-1 {
+			b.WriteByte('\n')
+		}
+	}
+	// kết thúc bằng xuống dòng thật
+	b.WriteString("\r\n")
 	r.prevRows = 0
 	return b.String()
 }

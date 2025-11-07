@@ -1700,24 +1700,50 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 
 var progressMu sync.Mutex
 
+// ví dụ trong cc.progressBar()
 func (cc *CopyCommand) progressBar() {
+    var rdr progressRenderer
     idle := 0
+
     for {
         select {
         case signal, ok := <-chProgressSignal:
-            if !ok { return }
-            s := cc.monitor.progressBar(signal.finish, signal.exitStat) // 1 dòng, không \n
-            progressMu.Lock()
-            io.WriteString(os.Stderr, s)  // KHÔNG println/printf có \n
-            progressMu.Unlock()
+            if !ok {
+                // đóng khối nếu còn
+                io.WriteString(os.Stderr, rdr.finalize())
+                return
+            }
+
+            // 1) build 1 chuỗi đầy đủ thông tin
+            line := cc.monitor.getProgressLine() // <== viết y hệt như cũ, KHÔNG có '\n'
+
+            // 2) wrap -> nhiều dòng (nếu dài), nhưng vẫn là **1 khối**
+            lines := wrapToWidth(line, termWidth())
+
+            // 3) vẽ khối (xoá đủ dòng thừa cũ)
+            io.WriteString(os.Stderr, rdr.render(lines))
             idle = 0
+
+            if signal.finish {
+                // kết thúc: in bar finish của bạn => rồi finalize khối
+                finish := cc.monitor.getFinishBar(signal.exitStat) // có '\n'
+                io.WriteString(os.Stderr, rdr.finalize())
+                io.WriteString(os.Stderr, finish)
+                return
+            }
+
         case <-time.After(500 * time.Millisecond):
-            if signalNum == -1 {
+            if signalNum == -1 { // bạn đang dùng để biết khi nào đóng
                 idle++
-                if idle >= 4 { return } // thoát yên lặng, không in thêm dòng
+                if idle >= 4 {
+                    io.WriteString(os.Stderr, rdr.finalize())
+                    return
+                }
             }
         }
     }
+}
+
 }
 
 
