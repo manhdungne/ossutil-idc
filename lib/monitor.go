@@ -20,11 +20,9 @@ var processTickInterval int64 = 5
 var clearStrLen int = 0
 var clearStr string = strings.Repeat(" ", clearStrLen)
 
-func getClearStr(str string) string {
-    const eraseLine = "\x1b[2K" // ESC[2K: xóa cả dòng hiện tại
-    return "\r" + eraseLine + str
+func getClearStr(s string) string {
+    return "\r\x1b[2K" + s // carriage return + clear entire line, no newline
 }
-
 type Monitorer interface {
 	setScanError(err error)
 	updateScanNum(num int64)
@@ -591,7 +589,7 @@ func (m *CPMonitor) getProgressBar() string {
 	}
 
 	// Ép về 1 dòng ngắn để tránh wrap
-	line = truncate(line)
+	line = m.composeProgressLine(line, currents)
 	// KHÔNG thêm \n; chỉ trả về chuỗi có '\r' ở đầu bởi getClearStr
 	return getClearStr(line)
 }
@@ -747,4 +745,58 @@ func truncate(s string) string {
         return s[:max-3] + "..."
     }
     return s[:max]
+}
+
+// Ghép base + Current sao cho vừa chiều rộng terminal.
+// Base luôn được giữ nguyên; chỉ cắt bớt danh sách Current nếu thiếu chỗ.
+func (m *CPMonitor) composeProgressLine(base string, currents []string) string {
+    max := getTermWidth()
+    if max <= 0 {
+        max = 120
+    }
+
+    // Nếu base đã dài hơn width thì cắt base và trả về luôn
+    if len(base) >= max {
+        return truncate(base)
+    }
+
+    // Phần trống còn lại để nhét "  Current: ..."
+    room := max - len(base) - 1 // chừa 1 ký tự an toàn
+    if room < 12 || len(currents) == 0 {
+        return base
+    }
+
+    b := strings.Builder{}
+    b.WriteString(base)
+    const prefix = "  Current: "
+    if len(prefix) > room {
+        return base
+    }
+    b.WriteString(prefix)
+    room -= len(prefix)
+
+    // Nhét từng mục Current, cắt gọn nếu cần
+    for i, c := range currents {
+        if len(c) > room {
+            if room <= 3 {
+                break
+            }
+            c = c[:room-3] + "..."
+        }
+        b.WriteString(c)
+        room -= len(c)
+
+        if i < len(currents)-1 {
+            sep := " | "
+            if len(sep) > room {
+                break
+            }
+            b.WriteString(sep)
+            room -= len(sep)
+        }
+        if room <= 0 {
+            break
+        }
+    }
+    return b.String()
 }
