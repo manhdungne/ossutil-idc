@@ -4368,7 +4368,7 @@ func extractObjectPathForFail(msg string) string {
 	}
 }
 
-const DefaultOutputDir = "ossutil_output"
+const defaultOutputDirLocal = "ossutil_output"
 
 func sanitizeObjectForFlatName(obj string) string {
     obj = strings.Trim(obj, "/")
@@ -4386,7 +4386,7 @@ func failFlatFileName(c CloudURL) string {
 
 func (cc *CopyCommand) defaultFailBaseDir() string {
     outDir, _ := GetString(OptionOutputDir, cc.command.options)
-    if outDir == "" { outDir = DefaultOutputDir }
+    if outDir == "" { outDir = defaultOutputDirLocal }
     return outDir
 }
 
