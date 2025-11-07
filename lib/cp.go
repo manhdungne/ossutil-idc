@@ -1706,7 +1706,7 @@ func (cc *CopyCommand) progressBar() {
             if !ok {
                 return
             }
-            fmt.Printf(cc.monitor.progressBar(signal.finish, signal.exitStat))
+            io.WriteString(os.Stderr, cc.monitor.progressBar(signal.finish, signal.exitStat))
             idle = 0
         case <-time.After(500 * time.Millisecond):
             // nếu đã yêu cầu đóng và không còn dữ liệu mới → thoát
