@@ -3938,7 +3938,7 @@ func (cc *CopyCommand) copyConsumer(
     chError chan<- error,
 ) {
     // nếu bạn có index i khi spawn goroutine, truyền vào làm wid
-    wid := 0 // hoặc tham số hoá khi tạo goroutine
+    //wid := 0 // hoặc tham số hoá khi tạo goroutine
 
     for objectInfo := range chObjects {
         // tên hiển thị ngắn gọn

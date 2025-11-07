@@ -550,8 +550,8 @@ func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
 }
 
 func (m *CPMonitor) getProgressBar() string {
-	mu.RLock()
-	defer mu.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	snap := m.getSnapshot()
 
@@ -729,19 +729,6 @@ func (m *CPMonitor) getPrecent(snap *CPMonitorSnap) float64 {
 		return 100
 	}
 	return 0
-}
-
-var clearStrLen int = 0
-var clearStr string = strings.Repeat(" ", clearStrLen)
-
-func getClearStr(str string) string {
-	// Overwrite in-place on a single line using '\r'
-	if clearStrLen <= len(str) {
-		clearStrLen = len(str)
-		return "\r" + str
-	}
-	clearStr = strings.Repeat(" ", clearStrLen)
-	return "\r" + clearStr + "\r" + str
 }
 
 // Giới hạn tối đa ký tự in ra để tránh terminal tự wrap.
