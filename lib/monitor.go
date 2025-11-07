@@ -68,7 +68,6 @@ func (m *Monitor) init(opStr string) {
 	m.errNum = 0
 	m.skipNum = 0
 	m.finish = false
-	m.currentByWID = make(map[int]string)
 }
 
 func (m *Monitor) setScanError(err error) {
