@@ -1698,23 +1698,23 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 	return nil
 }
 
+var progressMu sync.Mutex
+
 func (cc *CopyCommand) progressBar() {
     idle := 0
     for {
         select {
         case signal, ok := <-chProgressSignal:
-            if !ok {
-                return
-            }
-            s := cc.monitor.progressBar(signal.finish, signal.exitStat)
+            if !ok { return }
+            s := cc.monitor.progressBar(signal.finish, signal.exitStat) // 1 dòng, không \n
+            progressMu.Lock()
+            io.WriteString(os.Stderr, s)  // KHÔNG println/printf có \n
+            progressMu.Unlock()
             idle = 0
         case <-time.After(500 * time.Millisecond):
-            // nếu đã yêu cầu đóng và không còn dữ liệu mới → thoát
             if signalNum == -1 {
                 idle++
-                if idle >= 4 { // ~2s không có tín hiệu
-                    return
-                }
+                if idle >= 4 { return } // thoát yên lặng, không in thêm dòng
             }
         }
     }
