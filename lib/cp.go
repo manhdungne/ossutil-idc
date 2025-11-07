@@ -1701,48 +1701,52 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 var progressMu sync.Mutex
 
 func (cc *CopyCommand) progressBar() {
-    t := time.NewTicker(1 * time.Second)
-    defer t.Stop()
-
-    last := ""              // nhớ dòng trước, để tránh in trùng
-    since := time.Now()     // đảm bảo vẫn in ít nhất mỗi 5s
+    ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
 
     for {
         select {
         case sig, ok := <-chProgressSignal:
             if !ok {
-                return // kênh đóng -> thoát
+                return
             }
 
-            line := cc.monitor.BuildProgressLine()
-            // in khi khác dòng trước hoặc quá 5s chưa in
-            if line != "" && (line != last || time.Since(since) >= 5*time.Second) {
-                fmt.Fprintln(os.Stderr, line)
-                last = line
-                since = time.Now()
+            // 1) nếu prefix cấp-4 đổi -> in 1 dòng mốc
+            l4 := cc.monitor.currentLevelN(4)
+            if l4 != "" && l4 != cc.monitor.lastL4Printed {
+                // kết thúc dòng hiện tại (xuống dòng), rồi in mốc
+                fmt.Fprintln(os.Stderr)
+                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
+                cc.monitor.lastL4Printed = l4
             }
+
+            // 2) in/cập nhật 1 dòng tiến độ
+            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
 
             if sig.finish {
-                // in lần cuối cho chắc, rồi in tổng kết (dạng log thường)
-                if line != "" && line != last {
-                    fmt.Fprintln(os.Stderr, line)
-                }
-                // tổng kết (KHÔNG dùng getClearStr)
+                // kết thúc: xuống dòng để trả shell
+                fmt.Fprintln(os.Stderr)
+                // tổng kết dạng log thường (nếu muốn)
                 sum := cc.monitor.getWholeFinishBar()
                 if sum != "" {
-                    fmt.Fprint(os.Stderr, sum) // sum có \n sẵn
+                    // ensure không dùng getClearStr ở tổng kết
+                    if strings.HasPrefix(sum, "\r") {
+                        sum = strings.TrimPrefix(sum, "\r")
+                    }
+                    fmt.Fprint(os.Stderr, sum)
                 }
                 return
             }
 
-        case <-t.C:
-            // nhịp định kỳ 1s
-            line := cc.monitor.BuildProgressLine()
-            if line != "" && (line != last || time.Since(since) >= 5*time.Second) {
-                fmt.Fprintln(os.Stderr, line)
-                last = line
-                since = time.Now()
+        case <-ticker.C:
+            // tick định kỳ để refresh nếu không có tín hiệu
+            l4 := cc.monitor.currentLevelN(4)
+            if l4 != "" && l4 != cc.monitor.lastL4Printed {
+                fmt.Fprintln(os.Stderr)
+                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
+                cc.monitor.lastL4Printed = l4
             }
+            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
         }
     }
 }

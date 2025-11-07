@@ -421,6 +421,7 @@ type CPMonitor struct {
 	mu           sync.RWMutex
     currentByWID map[int]string
 	lastPanelAt time.Time
+	lastL4Printed string
 }
 
 func (m *CPMonitor) init(op operationType) {
@@ -935,17 +936,16 @@ func (r *progressRenderer) keep() string {
 	return b.String()
 }
 
-// --- CPMonitor: in theo dòng, không panel ---
-func (m *CPMonitor) BuildProgressLine() string {
+// 1 dòng tiến độ đủ thông tin, KHÔNG có '\n', dùng getClearStr để overwrite
+func (m *CPMonitor) BuildProgressLineOneLine() string {
     snap := m.getSnapshot()
 
-    // cập nhật tốc độ tức thời
+    // cập nhật tốc độ
     now := time.Now()
     snap.incrementSize = m.transferSize - m.lastSnapSize
     m.lastSnapSize = snap.transferSize
     m.lastSnapTime = now
 
-    // số liệu
     scanNum  := max(m.totalNum, snap.dealNum)
     scanSize := max(m.totalSize, snap.dealSize)
     copyCnt  := snap.fileNum + snap.dirNum
@@ -954,30 +954,46 @@ func (m *CPMonitor) BuildProgressLine() string {
     okSize   := getSizeString(snap.dealSize)
     speed    := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
 
-    // current (rút gọn vừa terminal)
-    currents := m.snapshotCurrents(2)
-    curStr := ""
-    if len(currents) > 0 {
-        curStr = " | Current: " + strings.Join(currents, " | ")
-    }
-
     pctStr := ""
     if m.seekAheadEnd && m.seekAheadError == nil {
         pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
     }
 
-    // CHỈ LÀ CHUỖI BÌNH THƯỜNG, KHÔNG \r, KHÔNG ANSI
-    line := fmt.Sprintf(
-        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %s%s%s",
+    base := fmt.Sprintf(
+        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %s%s",
         scanNum, getSizeString(scanSize),
         snap.dealNum, copyCnt, skipCnt, errCnt,
-        okSize, speed, pctStr, curStr,
+        okSize, speed, pctStr,
     )
 
-    // cắt bớt nếu quá rộng để tránh wrap mạnh
-    w := getTermWidth() // hàm của bạn đang có
-    if len(line) > w && w > 6 {
-        line = line[:w-3] + "..."
+    // gói cho vừa terminal (tuỳ bạn đã có getTermWidth/truncate)
+    w := getTermWidth()
+    if len(base) > w && w > 6 {
+        base = base[:w-3] + "..."
     }
-    return line
+    // getClearStr trả về "\r...." giúp overwrite trên 1 dòng
+    return getClearStr(base)
+}
+
+
+func (m *CPMonitor) currentLevelN(n int) string {
+    cur := ""
+    m.mu.RLock()
+    for _, v := range m.currentByWID { // lấy 1 cái đầu tiên là đủ
+        cur = v
+        break
+    }
+    m.mu.RUnlock()
+    if cur == "" {
+        return ""
+    }
+    // bỏ scheme, bỏ slash đầu
+    cur = strings.TrimPrefix(cur, "oss://")
+    cur = strings.TrimPrefix(cur, "s3://")
+    cur = strings.TrimLeft(cur, "/")
+    parts := strings.Split(cur, "/")
+    if len(parts) > n {
+        parts = parts[:n]
+    }
+    return strings.Join(parts, "/")
 }
