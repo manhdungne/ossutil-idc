@@ -1712,7 +1712,7 @@ func (cc *CopyCommand) progressBar() {
             }
 
             // 1) nếu prefix cấp-4 đổi -> in 1 dòng mốc
-            l4 := cc.monitor.currentLevelN(4)
+            l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
                 // kết thúc dòng hiện tại (xuống dòng), rồi in mốc
                 fmt.Fprintln(os.Stderr)
@@ -1740,7 +1740,7 @@ func (cc *CopyCommand) progressBar() {
 
         case <-ticker.C:
             // tick định kỳ để refresh nếu không có tín hiệu
-            l4 := cc.monitor.currentLevelN(4)
+            l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
                 fmt.Fprintln(os.Stderr)
                 fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
