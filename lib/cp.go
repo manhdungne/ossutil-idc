@@ -3480,8 +3480,6 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     if err != nil { return err }
     md, putHdr := cc.buildS3ObjectHeadersFromOSSHead(head)
 
-    start := time.Now()
-
     ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
     defer cancel()
 
@@ -3506,29 +3504,9 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_MultipartOnce(
     results := make(chan s3types.CompletedPart, buf)
     errCh   := make(chan error, 1)
 
-    totalParts := int32((size + partSize - 1) / partSize)
     var enq, doneParts, inflight int32
     var lastRecv int64
     atomic.StoreInt64(&lastRecv, time.Now().UnixNano())
-
-    // Watchdog in heartbeat 30s/lần
-    // go func() {
-    //     tick := time.NewTicker(30 * time.Second)
-    //     defer tick.Stop()
-    //     for {
-    //         select {
-    //         case <-ctx.Done():
-    //             return
-    //         case <-tick.C:
-    //             e := atomic.LoadInt32(&enq)
-    //             d := atomic.LoadInt32(&doneParts)
-    //             f := atomic.LoadInt32(&inflight)
-    //             lp := time.Since(time.Unix(0, atomic.LoadInt64(&lastRecv))).Round(time.Second)
-    //             fmt.Printf("[WD] %s parts total=%d enq=%d done=%d inflight=%d pending=%d elapsed=%s last_progress=%s\n",
-    //                 dstKey, totalParts, e, d, f, int(e-d), time.Since(start).Round(time.Second), lp)
-    //         }
-    //     }
-    // }()
 
     // Worker pool
     var wg sync.WaitGroup

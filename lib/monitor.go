@@ -57,8 +57,6 @@ type Monitor struct {
 	finish         bool
 	lastSnapTime   time.Time
 	_              uint32 //Add padding to make sure the next data 64bits alignment
-	mu             sync.RWMutex
-    currentByWID   map[int]string // workerID -> object đang xử lý
 }
 
 func (m *Monitor) init(opStr string) {
@@ -101,39 +99,6 @@ func (m *Monitor) getSnapshot() *MonitorSnap {
 	snap.skipNum = m.skipNum
 	snap.dealNum = snap.okNum + snap.errNum
 	return &snap
-}
-
-// Set tên object đang xử lý cho worker wid
-func (m *CPMonitor) SetCurrent(wid int, name string) {
-    m.mu.Lock()
-    m.currentByWID[wid] = name
-    m.mu.Unlock()
-}
-
-// Xoá trạng thái current của worker wid
-func (m *CPMonitor) ClearCurrent(wid int) {
-    m.mu.Lock()
-    delete(m.currentByWID, wid)
-    m.mu.Unlock()
-}
-
-// Lấy danh sách current (tối đa max mục) để in ra
-func (m *CPMonitor) snapshotCurrents(max int) []string {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    res := make([]string, 0, len(m.currentByWID))
-    for _, v := range m.currentByWID {
-        // rút gọn chuỗi quá dài cho gọn màn hình
-        const maxLen = 120
-        if len(v) > maxLen {
-            v = v[:maxLen-3] + "..."
-        }
-        res = append(res, v)
-        if max > 0 && len(res) >= max {
-            break
-        }
-    }
-    return res
 }
 
 
