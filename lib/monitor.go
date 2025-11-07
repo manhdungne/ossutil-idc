@@ -950,3 +950,39 @@ func (r *progressRenderer) finalize() string {
 	r.prevRows = 0
 	return b.String()
 }
+
+func (m *CPMonitor) BuildProgressLine(finish bool) string {
+	snap := m.getSnapshot()
+
+	if snap.duration < m.tickDuration {
+		return ""
+	}
+	m.lastSnapTime = time.Now()
+	snap.incrementSize = m.transferSize - m.lastSnapSize
+	m.lastSnapSize = snap.transferSize
+
+	currents := m.snapshotCurrents(2)
+	curStr := ""
+	if len(currents) > 0 {
+		curStr = " | Current: " + strings.Join(currents, " | ")
+	}
+
+	scanNum := max(m.totalNum, snap.dealNum)
+	scanSize := max(m.totalSize, snap.dealSize)
+	copyCount := snap.fileNum + snap.dirNum
+	skipCount := snap.skipNum + snap.skipNumDir
+	errCount := snap.errNum
+
+	line := fmt.Sprintf(
+		"Scanned num: %d, size: %s | Dealed: %d(copy %d, skip %d, err %d) | OK size: %s | Speed: %.2fKB/s%s",
+		scanNum, getSizeString(scanSize),
+		snap.dealNum, copyCount, skipCount, errCount,
+		getSizeString(snap.dealSize),
+		m.getSpeed(snap),
+		curStr,
+	)
+	if m.seekAheadEnd && m.seekAheadError == nil {
+		line += fmt.Sprintf(" | Progress: %.3f%%", m.getPrecent(snap))
+	}
+	return line
+}

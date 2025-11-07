@@ -1709,31 +1709,28 @@ func (cc *CopyCommand) progressBar() {
         select {
         case signal, ok := <-chProgressSignal:
             if !ok {
-                // đóng khối nếu còn
                 io.WriteString(os.Stderr, rdr.finalize())
                 return
             }
 
-            // 1) build 1 chuỗi đầy đủ thông tin
-            line := cc.monitor.getProgressLine() // <== viết y hệt như cũ, KHÔNG có '\n'
+            // tạo chuỗi progress đầy đủ — đoạn này chính là "getProgressLine" mình nói tới
+            line := cc.monitor.BuildProgressLine(signal.finish)
 
-            // 2) wrap -> nhiều dòng (nếu dài), nhưng vẫn là **1 khối**
+            // wrap thành nhiều dòng (nếu dài)
             lines := wrapToWidth(line, termWidth())
 
-            // 3) vẽ khối (xoá đủ dòng thừa cũ)
+            // ghi đè khối cũ
             io.WriteString(os.Stderr, rdr.render(lines))
-            idle = 0
 
             if signal.finish {
-                // kết thúc: in bar finish của bạn => rồi finalize khối
-                finish := cc.monitor.getFinishBar(signal.exitStat) // có '\n'
                 io.WriteString(os.Stderr, rdr.finalize())
-                io.WriteString(os.Stderr, finish)
+                io.WriteString(os.Stderr, cc.monitor.getFinishBar(signal.exitStat))
                 return
             }
+            idle = 0
 
         case <-time.After(500 * time.Millisecond):
-            if signalNum == -1 { // bạn đang dùng để biết khi nào đóng
+            if signalNum == -1 {
                 idle++
                 if idle >= 4 {
                     io.WriteString(os.Stderr, rdr.finalize())
@@ -1743,6 +1740,7 @@ func (cc *CopyCommand) progressBar() {
         }
     }
 }
+
 
 
 
