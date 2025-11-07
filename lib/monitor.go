@@ -896,9 +896,6 @@ func (r *progressRenderer) render(lines []string) string {
 		}
 	}
 
-	// xoá phần dưới con trỏ
-	b.WriteString("\x1b[0J")
-
 	// vẽ đủ maxRows dòng
 	for i := 0; i < maxRows; i++ {
 		b.WriteString("\r\x1b[2K")
