@@ -619,6 +619,8 @@ func (m *CPMonitor) getProgressBar() string {
 	defer mu.RUnlock()
 
 	snap := m.getSnapshot()
+
+	// throttle theo tickDuration
 	if snap.duration < m.tickDuration {
 		return ""
 	} else {
@@ -627,13 +629,36 @@ func (m *CPMonitor) getProgressBar() string {
 		m.lastSnapSize = snap.transferSize
 	}
 
-	if m.seekAheadEnd && m.seekAheadError == nil {
-		return getClearStr(fmt.Sprintf("Total num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%s, Speed: %.2fKB/s", m.totalNum, getSizeString(m.totalSize), snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap), m.getPrecent(snap), "%%", m.getSpeed(snap)))
+	// Lấy danh sách các công việc đang xử lý (tối đa 3)
+	currents := m.snapshotCurrents(3)
+	curStr := ""
+	if len(currents) > 0 {
+		curStr = " Current: " + strings.Join(currents, " | ")
 	}
+
+	if m.seekAheadEnd && m.seekAheadError == nil {
+		// Đã quét xong danh sách nguồn: có thể tính % hoàn thành
+		return getClearStr(fmt.Sprintf(
+			"Total num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%s, Speed: %.2fKB/s%s",
+			m.totalNum, getSizeString(m.totalSize),
+			snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
+			m.getPrecent(snap), "%%", m.getSpeed(snap),
+			curStr,
+		))
+	}
+
+	// Đang quét: chỉ hiển thị scanned/dealed và tốc độ tức thời
 	scanNum := max(m.totalNum, snap.dealNum)
 	scanSize := max(m.totalSize, snap.dealSize)
-	return getClearStr(fmt.Sprintf("Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.", scanNum, getSizeString(scanSize), snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap), m.getSpeed(snap)))
+	return getClearStr(fmt.Sprintf(
+		"Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.%s",
+		scanNum, getSizeString(scanSize),
+		snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
+		m.getSpeed(snap),
+		curStr,
+	))
 }
+
 
 func (m *CPMonitor) getFinishBar(exitStat int) string {
 	if exitStat == normalExit {
