@@ -8,6 +8,7 @@ import (
 	"time"
 	"os"
     "golang.org/x/term"
+	"unicode/utf8"
 )
 
 const (
@@ -545,55 +546,49 @@ func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
 	return m.getFinishBar(exitStat)
 }
 
+var cpRenderer progressRenderer
+
 func (m *CPMonitor) getProgressBar() string {
-	snap := m.getSnapshot()
+    snap := m.getSnapshot()
 
-	// throttle theo tickDuration
-	if snap.duration < m.tickDuration {
-		return ""
-	} else {
-		m.lastSnapTime = time.Now()
-		snap.incrementSize = m.transferSize - m.lastSnapSize
-		m.lastSnapSize = snap.transferSize
-	}
+    if snap.duration < m.tickDuration {
+        return ""
+    }
+    m.lastSnapTime = time.Now()
+    snap.incrementSize = m.transferSize - m.lastSnapSize
+    m.lastSnapSize = snap.transferSize
 
-	// Lấy danh sách công việc đang xử lý (tối đa 2 để gọn)
-	currents := m.snapshotCurrents(2)
-	curStr := ""
-	if len(currents) > 0 {
-		curStr = " Current: " + strings.Join(currents, " | ")
-	}
+    // compose đủ thông tin (giống bạn đang làm)
+    scanNum := max(m.totalNum, snap.dealNum)
+    scanSize := max(m.totalSize, snap.dealSize)
+    copyCount := snap.fileNum + snap.dirNum
+    skipCount := snap.skipNum + snap.skipNumDir
+    errCount  := snap.errNum
 
-	var line string
-	if m.seekAheadEnd && m.seekAheadError == nil {
-		// Đã scan xong -> hiển thị % hoàn thành
-		line = fmt.Sprintf(
-			"Scanned num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%%, Speed: %.2fKB/s%s",
-			m.totalNum, getSizeString(m.totalSize),
-			snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
-			m.getPrecent(snap),
-			m.getSpeed(snap),
-			curStr,
-		)
-	} else {
-		// Chưa scan xong -> chỉ hiển thị dealt/scan
-		scanNum := max(m.totalNum, snap.dealNum)
-		scanSize := max(m.totalSize, snap.dealSize)
-		line = fmt.Sprintf(
-			"Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.%s",
-			scanNum, getSizeString(scanSize),
-			snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
-			m.getSpeed(snap),
-			curStr,
-		)
-	}
+    currents := m.snapshotCurrents(2)
+    curStr := ""
+    if len(currents) > 0 {
+        curStr = " | Current: " + strings.Join(currents, " | ")
+    }
+    pctStr := ""
+    if m.seekAheadEnd && m.seekAheadError == nil {
+        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
+    }
 
-	// Ép về 1 dòng ngắn để tránh wrap
-	line = m.composeProgressLine(line, currents)
-	// KHÔNG thêm \n; chỉ trả về chuỗi có '\r' ở đầu bởi getClearStr
-	return getClearStr(line)
+    line := fmt.Sprintf(
+        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s%s",
+        scanNum, getSizeString(scanSize),
+        snap.dealNum, copyCount, skipCount, errCount,
+        getSizeString(snap.dealSize),
+        m.getSpeed(snap), pctStr, curStr,
+    )
+
+    // wrap theo bề rộng hiện tại
+    lines := wrapToWidth(line, termWidth())
+
+    // trả về chuỗi render khối (không có '\n' ở cuối)
+    return cpRenderer.render(lines)
 }
-
 
 
 func (m *CPMonitor) getFinishBar(exitStat int) string {
@@ -799,4 +794,148 @@ func (m *CPMonitor) composeProgressLine(base string, currents []string) string {
         }
     }
     return b.String()
+}
+
+type progressRenderer struct {
+	prevRows int // số dòng đã vẽ kỳ trước
+}
+
+// lấy bề rộng terminal (stderr)
+func termWidth() int {
+	w, _, err := term.GetSize(int(os.Stderr.Fd()))
+	if err != nil || w <= 0 {
+		return 120
+	}
+	// chừa 2 ký tự tránh wrap mép phải
+	if w > 2 {
+		return w - 2
+	}
+	return w
+}
+
+// cắt chuỗi theo độ rộng, ưu tiên tách ở khoảng trắng; fallback cắt cứng
+func wrapToWidth(s string, width int) []string {
+	if width <= 0 || len(s) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	for len(s) > 0 {
+		if displayWidth(s) <= width {
+			lines = append(lines, s)
+			break
+		}
+		// tìm vị trí tách tốt trong khoảng [0:width]
+		cut := softCutIndex(s, width)
+		lines = append(lines, strings.TrimRight(s[:cut], " "))
+		s = strings.TrimLeft(s[cut:], " ")
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
+// đếm “độ rộng hiển thị” (giản lược: đếm rune; đủ tốt nếu không dùng ANSI màu)
+func displayWidth(s string) int {
+	return utf8.RuneCountInString(s)
+}
+
+// tìm điểm cắt “mềm” <= width tại khoảng trắng; nếu không có thì cắt đúng width runes
+func softCutIndex(s string, width int) int {
+	if width <= 0 {
+		return 0
+	}
+	// đi qua width rune
+	i := 0
+	for idx := range s {
+		if i == width {
+			break
+		}
+		i++
+		if i == width {
+			// idx là byte index của rune đầu tiên sau khi đủ width? ta cần vị trí sau rune thứ width
+			// range cho idx của rune hiện tại; để lấy sau rune này cần tiếp tục một bước
+			// nhưng đơn giản: giữ idx, rồi sau vòng kế ta có nextIdx
+		}
+		_ = idx
+	}
+	// tính byte index sau rune thứ width
+	byteIdx := byteIndexAfterRunes(s, width)
+
+	// tìm khoảng trắng gần nhất về bên trái
+	left := strings.LastIndexAny(s[:byteIdx], " \t")
+	if left > width/2 { // chỉ cắt ở space nếu đủ gần cuối
+		return left
+	}
+	return byteIdx
+}
+
+// trả byte index sau N rune
+func byteIndexAfterRunes(s string, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	i := 0
+	for idx := range s {
+		if i == n {
+			return idx
+		}
+		i++
+	}
+	return len(s)
+}
+
+// render “khối dòng” không sinh lịch sử mới
+// - lines: nội dung đã wrap theo terminal width
+// - Giữ con trỏ ở dòng đầu để lần sau có thể “vẽ đè”
+func (r *progressRenderer) render(lines []string) string {
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	curRows := len(lines)
+
+	var b strings.Builder
+
+	// 1) đưa con trỏ về đầu khối cũ
+	if r.prevRows > 0 {
+		// lên r.prevRows-1 dòng (đang ở dòng cuối khối cũ)
+		b.WriteString(fmt.Sprintf("\r\x1b[%dA", r.prevRows-1))
+	}
+
+	// 2) xoá & vẽ lại từng dòng
+	for i, ln := range lines {
+		// xoá cả dòng -> in nội dung
+		b.WriteString("\r\x1b[2K")
+		b.WriteString(ln)
+		if i < curRows-1 {
+			// xuống dòng giữa các dòng trong khối
+			b.WriteByte('\n')
+		}
+	}
+
+	// 3) sau khi vẽ xong, đưa con trỏ về **đầu khối mới**
+	if curRows > 1 {
+		b.WriteString(fmt.Sprintf("\r\x1b[%dA", curRows-1))
+	} else {
+		b.WriteString("\r") // về đầu dòng
+	}
+
+	// cập nhật số dòng đã vẽ
+	r.prevRows = curRows
+	return b.String()
+}
+
+// gọi khi kết thúc để “chốt” khối thành lịch sử (in xuống dòng)
+func (r *progressRenderer) finalize() string {
+	if r.prevRows <= 0 {
+		return ""
+	}
+	// di xuống cuối khối rồi xuống thêm 1 dòng để “chốt” lịch sử
+	var b strings.Builder
+	if r.prevRows > 1 {
+		b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1)) // move cursor down
+	}
+	b.WriteByte('\n')
+	r.prevRows = 0
+	return b.String()
 }
