@@ -564,35 +564,43 @@ func (m *CPMonitor) getProgressBar() string {
 		m.lastSnapSize = snap.transferSize
 	}
 
-	// Lấy danh sách các công việc đang xử lý (tối đa 3)
-	currents := m.snapshotCurrents(3)
+	// Lấy danh sách công việc đang xử lý (tối đa 2 để gọn)
+	currents := m.snapshotCurrents(2)
 	curStr := ""
 	if len(currents) > 0 {
 		curStr = " Current: " + strings.Join(currents, " | ")
 	}
 
+	var line string
 	if m.seekAheadEnd && m.seekAheadError == nil {
-		// Đã quét xong danh sách nguồn: có thể tính % hoàn thành
-		return getClearStr(fmt.Sprintf(
-			"Total num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%s, Speed: %.2fKB/s%s",
+		// Đã scan xong -> hiển thị % hoàn thành
+		line = fmt.Sprintf(
+			"Scanned num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%%, Speed: %.2fKB/s%s",
 			m.totalNum, getSizeString(m.totalSize),
 			snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
-			m.getPrecent(snap), "%%", m.getSpeed(snap),
+			m.getPrecent(snap),
+			m.getSpeed(snap),
 			curStr,
-		))
+		)
+	} else {
+		// Chưa scan xong -> chỉ hiển thị dealt/scan
+		scanNum := max(m.totalNum, snap.dealNum)
+		scanSize := max(m.totalSize, snap.dealSize)
+		line = fmt.Sprintf(
+			"Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.%s",
+			scanNum, getSizeString(scanSize),
+			snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
+			m.getSpeed(snap),
+			curStr,
+		)
 	}
 
-	// Đang quét: chỉ hiển thị scanned/dealed và tốc độ tức thời
-	scanNum := max(m.totalNum, snap.dealNum)
-	scanSize := max(m.totalSize, snap.dealSize)
-	return getClearStr(fmt.Sprintf(
-		"Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.%s",
-		scanNum, getSizeString(scanSize),
-		snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
-		m.getSpeed(snap),
-		curStr,
-	))
+	// Ép về 1 dòng ngắn để tránh wrap
+	line = truncate(line, progressMaxCols)
+	// KHÔNG thêm \n; chỉ trả về chuỗi có '\r' ở đầu bởi getClearStr
+	return getClearStr(line)
 }
+
 
 
 func (m *CPMonitor) getFinishBar(exitStat int) string {
@@ -722,3 +730,37 @@ func (m *CPMonitor) getPrecent(snap *CPMonitorSnap) float64 {
 	}
 	return 0
 }
+
+var clearStrLen int = 0
+var clearStr string = strings.Repeat(" ", clearStrLen)
+
+func getClearStr(str string) string {
+	// Overwrite in-place on a single line using '\r'
+	if clearStrLen <= len(str) {
+		clearStrLen = len(str)
+		return "\r" + str
+	}
+	clearStr = strings.Repeat(" ", clearStrLen)
+	return "\r" + clearStr + "\r" + str
+}
+
+// Giới hạn tối đa ký tự in ra để tránh terminal tự wrap.
+// Bạn có thể chỉnh con số này nếu terminal rộng hơn.
+const progressMaxCols = 160
+
+func truncate(s string, max int) string {
+	if max <= 3 {
+		if max <= 0 {
+			return ""
+		}
+		if len(s) <= max {
+			return s
+		}
+		return s[:max]
+	}
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+

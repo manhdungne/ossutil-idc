@@ -3931,37 +3931,37 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
 
 
 func (cc *CopyCommand) copyConsumer(
-    wid int,
-    bucket *oss.Bucket, srcURL, destURL CloudURL,
-    chObjects <-chan objectInfoType, chError chan<- error,
+	wid int,
+    bucket *oss.Bucket,
+    srcURL, destURL CloudURL,
+    chObjects <-chan objectInfoType,
+    chError chan<- error,
 ) {
+    // nếu bạn có index i khi spawn goroutine, truyền vào làm wid
+    wid := 0 // hoặc tham số hoá khi tạo goroutine
+
     for objectInfo := range chObjects {
-        // xây chuỗi hiển thị
+        // tên hiển thị ngắn gọn
         srcObject := objectInfo.prefix + objectInfo.relativeKey
-        dstObject := cc.makeCopyObjectName(
-            cc.adjustRelativeKeyForDup(objectInfo.relativeKey, srcURL.object, destURL.object),
-            destURL.object,
-        )
-        cc.monitor.SetCurrent(wid, fmt.Sprintf("%s -> %s",
-            CloudURLToString(srcURL.bucket, srcObject),
-            CloudURLToString(destURL.bucket, dstObject),
-        ))
+        cc.monitor.SetCurrent(wid, "oss://" + srcURL.bucket + "/" + srcObject + " -> " +
+            cc.urlStringFor(CloudURL{bucket: destURL.bucket, object: destURL.object}, true))
 
-        wid := 0 // dùng 0 cho single
-		cc.monitor.SetCurrent(wid, "<src> -> <dest>")
-		// ... gọi hàm thực thi ...
-		cc.monitor.ClearCurrent(wid)
-		err := cc.copySingleFileWithReport(bucket, objectInfo, srcURL, destURL)
+        err := cc.copySingleFileWithReport(bucket, objectInfo, srcURL, destURL)
 
+        // clear ngay sau khi xong object này
         cc.monitor.ClearCurrent(wid)
+
         if err != nil {
             chError <- err
-            if !cc.cpOption.ctnu { return }
+            if !cc.cpOption.ctnu {
+                return
+            }
             continue
         }
     }
     chError <- nil
 }
+
 
 
 // parse "s3://bucket[/key]" thành CloudURL tối thiểu
