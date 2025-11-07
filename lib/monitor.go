@@ -589,7 +589,7 @@ func (m *CPMonitor) getProgressBar() string {
 	}
 
 	// Ép về 1 dòng ngắn để tránh wrap
-	line = truncate(line, progressMaxCols)
+	line = truncate(line)
 	// KHÔNG thêm \n; chỉ trả về chuỗi có '\r' ở đầu bởi getClearStr
 	return getClearStr(line)
 }
@@ -728,19 +728,19 @@ func (m *CPMonitor) getPrecent(snap *CPMonitorSnap) float64 {
 // Bạn có thể chỉnh con số này nếu terminal rộng hơn.
 const progressMaxCols = 200
 
-func truncate(s string, max int) string {
-	if max <= 3 {
-		if max <= 0 {
-			return ""
-		}
-		if len(s) <= max {
-			return s
-		}
-		return s[:max]
-	}
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-3] + "..."
+func getTermWidth() int {
+    w, _, err := term.GetSize(int(os.Stderr.Fd()))
+    if err != nil || w <= 0 {
+        return 120
+    }
+    return w - 2 // chừa 2 ký tự tránh wrap mép phải
+}
+
+func truncate(s string) string {
+    max := getTermWidth()
+    if len(s) <= max {
+        return s
+    }
+    return s[:max-3] + "..."
 }
 
