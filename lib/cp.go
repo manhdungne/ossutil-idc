@@ -1700,7 +1700,6 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 
 var progressMu sync.Mutex
 
-// ví dụ trong cc.progressBar()
 func (cc *CopyCommand) progressBar() {
     var rdr progressRenderer
     idle := 0
@@ -1709,40 +1708,47 @@ func (cc *CopyCommand) progressBar() {
         select {
         case signal, ok := <-chProgressSignal:
             if !ok {
-                io.WriteString(os.Stderr, rdr.finalize())
+                // kết thúc: giữ panel lại cho người dùng nhìn, rồi xuống dưới
+                io.WriteString(os.Stderr, rdr.keep())
                 return
             }
 
-            // tạo chuỗi progress đầy đủ — đoạn này chính là "getProgressLine" mình nói tới
-            line := cc.monitor.BuildProgressLine(signal.finish)
-
-            // wrap thành nhiều dòng (nếu dài)
-            lines := wrapToWidth(line, termWidth())
-
-            // ghi đè khối cũ
-            io.WriteString(os.Stderr, rdr.render(lines))
+            // xây dựng panel nhiều dòng, nếu nil thì bỏ qua frame này (throttle)
+            panel := cc.monitor.BuildProgressPanel()
+            if panel != nil {
+                io.WriteString(os.Stderr, rdr.render(panel))
+            }
 
             if signal.finish {
-                io.WriteString(os.Stderr, rdr.finalize())
+                // in khung cuối cùng thật rõ ràng một lần nữa
+                finalPanel := cc.monitor.BuildProgressPanel()
+                if finalPanel != nil {
+                    io.WriteString(os.Stderr, rdr.render(finalPanel))
+                }
+                // GIỮ panel lại (không xoá) và in finish bar có \n ở dưới
+                io.WriteString(os.Stderr, rdr.keep())
                 io.WriteString(os.Stderr, cc.monitor.getFinishBar(signal.exitStat))
                 return
             }
             idle = 0
 
-        case <-time.After(500 * time.Millisecond):
+        case <-time.After(1 * time.Second):
             if signalNum == -1 {
                 idle++
-                if idle >= 4 {
-                    io.WriteString(os.Stderr, rdr.finalize())
+                if idle >= 3 { // ~3s không có tín hiệu mới -> coi như xong
+                    io.WriteString(os.Stderr, rdr.keep())
                     return
+                }
+            } else {
+                // tick đều để vẽ panel dù không có signal mới (cho tốc độ/OK size nhảy)
+                panel := cc.monitor.BuildProgressPanel()
+                if panel != nil {
+                    io.WriteString(os.Stderr, rdr.render(panel))
                 }
             }
         }
     }
 }
-
-
-
 
 func (cc *CopyCommand) closeProgress() {
 	signalNum = -1

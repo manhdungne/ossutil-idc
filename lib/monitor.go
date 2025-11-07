@@ -420,6 +420,7 @@ type CPMonitor struct {
 	lastSnapTime   time.Time
 	mu           sync.RWMutex
     currentByWID map[int]string
+	lastPanelAt time.Time
 }
 
 func (m *CPMonitor) init(op operationType) {
@@ -440,6 +441,8 @@ func (m *CPMonitor) init(op operationType) {
 	m.lastSnapTime = time.Now()
 	m.tickDuration = processTickInterval * int64(time.Second)
 	m.currentByWID = make(map[int]string)
+	m.tickDuration = 1 * int64(time.Second) // 1s/khung cho đỡ nhấp nháy
+	m.lastPanelAt = time.Now()
 }
 
 func (m *CPMonitor) setScanError(err error) {
@@ -847,25 +850,19 @@ func byteIndexAfterRunes(s string, n int) int {
 }
 
 type progressRenderer struct {
-	prevRows int // số dòng đã vẽ ở tick trước
+	prevRows int
 }
 
-// Lấy độ rộng terminal cho stderr
 func termWidth() int {
 	w, _, err := term.GetSize(int(os.Stderr.Fd()))
 	if err != nil || w <= 0 {
 		return 120
 	}
-	// chừa 2 ký tự để tránh wrap ở mép phải
 	return w - 2
 }
 
-// Wrap 1 chuỗi dài thành nhiều dòng theo width (không sinh \n ở giữa dòng)
 func wrapToWidth(s string, width int) []string {
 	if width <= 4 {
-		if len(s) == 0 {
-			return []string{""}
-		}
 		if len(s) <= width {
 			return []string{s}
 		}
@@ -880,8 +877,6 @@ func wrapToWidth(s string, width int) []string {
 	return lines
 }
 
-// Render khối progress: vẽ đủ max(prevRows, curRows) và xoá phần thừa.
-// Trả lại chuỗi escape; bạn chỉ việc io.WriteString(os.Stderr, render(...))
 func (r *progressRenderer) render(lines []string) string {
 	if len(lines) == 0 {
 		lines = []string{""}
@@ -893,8 +888,7 @@ func (r *progressRenderer) render(lines []string) string {
 	}
 
 	var b strings.Builder
-
-	// 1) Đưa con trỏ về đầu khối cũ
+	// quay về đầu khối cũ
 	if r.prevRows > 0 {
 		b.WriteString("\r")
 		if r.prevRows > 1 {
@@ -902,12 +896,12 @@ func (r *progressRenderer) render(lines []string) string {
 		}
 	}
 
-	// 2) Xoá mọi thứ từ vị trí con trỏ đến cuối màn hình (phòng rác do wrap)
+	// xoá phần dưới con trỏ
 	b.WriteString("\x1b[0J")
 
-	// 3) Vẽ/xoá đủ maxRows dòng
+	// vẽ đủ maxRows dòng
 	for i := 0; i < maxRows; i++ {
-		b.WriteString("\r\x1b[2K") // xoá sạch dòng
+		b.WriteString("\r\x1b[2K")
 		if i < curRows {
 			b.WriteString(lines[i])
 		}
@@ -916,7 +910,7 @@ func (r *progressRenderer) render(lines []string) string {
 		}
 	}
 
-	// 4) Đưa con trỏ về đầu khối để tick sau đè tiếp
+	// đưa con trỏ về đầu khối
 	if maxRows > 1 {
 		b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
 	} else {
@@ -927,62 +921,84 @@ func (r *progressRenderer) render(lines []string) string {
 	return b.String()
 }
 
-// Kết thúc progress: xoá khối và xuống hẳn 1 dòng
-func (r *progressRenderer) finalize() string {
+// Giữ panel lại khi kết thúc (không xoá), chỉ đẩy con trỏ xuống dưới
+func (r *progressRenderer) keep() string {
 	if r.prevRows == 0 {
-		return ""
+		return "\n"
 	}
 	var b strings.Builder
-	// về đầu khối
 	b.WriteString("\r")
-	if r.prevRows > 1 {
-		b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
+	// nhảy xuống dưới cùng của khối
+	for i := 1; i < r.prevRows; i++ {
+		b.WriteByte('\n')
 	}
-	// xoá khối
-	for i := 0; i < r.prevRows; i++ {
-		b.WriteString("\r\x1b[2K")
-		if i < r.prevRows-1 {
-			b.WriteByte('\n')
-		}
-	}
-	// kết thúc bằng xuống dòng thật
-	b.WriteString("\r\n")
+	b.WriteString("\n")
+	// reset, nhưng không xoá panel
 	r.prevRows = 0
 	return b.String()
 }
 
-func (m *CPMonitor) BuildProgressLine(finish bool) string {
-	snap := m.getSnapshot()
-
-	if snap.duration < m.tickDuration {
-		return ""
+func (m *CPMonitor) BuildProgressPanel() []string {
+	now := time.Now()
+	// throttle 1s để mắt nhìn kịp, tránh nhấp nháy
+	if now.Sub(m.lastPanelAt) < time.Second {
+		return nil
 	}
-	m.lastSnapTime = time.Now()
+	m.lastPanelAt = now
+
+	snap := m.getSnapshot()
+	// cập nhật tốc độ
 	snap.incrementSize = m.transferSize - m.lastSnapSize
 	m.lastSnapSize = snap.transferSize
+	m.lastSnapTime = now
 
-	currents := m.snapshotCurrents(2)
-	curStr := ""
-	if len(currents) > 0 {
-		curStr = " | Current: " + strings.Join(currents, " | ")
-	}
-
+	// thống kê tổng quát
 	scanNum := max(m.totalNum, snap.dealNum)
 	scanSize := max(m.totalSize, snap.dealSize)
 	copyCount := snap.fileNum + snap.dirNum
 	skipCount := snap.skipNum + snap.skipNumDir
 	errCount := snap.errNum
+	okSize := getSizeString(snap.dealSize)
+	speed := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
 
-	line := fmt.Sprintf(
-		"Scanned num: %d, size: %s | Dealed: %d(copy %d, skip %d, err %d) | OK size: %s | Speed: %.2fKB/s%s",
-		scanNum, getSizeString(scanSize),
-		snap.dealNum, copyCount, skipCount, errCount,
-		getSizeString(snap.dealSize),
-		m.getSpeed(snap),
-		curStr,
-	)
-	if m.seekAheadEnd && m.seekAheadError == nil {
-		line += fmt.Sprintf(" | Progress: %.3f%%", m.getPrecent(snap))
+	// 2 đường “current” đang xử lý (rút gọn)
+	currents := m.snapshotCurrents(2)
+	for i := range currents {
+		w := termWidth()
+		if len(currents[i]) > w {
+			if w > 6 {
+				currents[i] = currents[i][:w-3] + "..."
+			} else {
+				currents[i] = currents[i][:w]
+			}
+		}
 	}
-	return line
+
+	// header + 3 dòng stats + (tối đa 2) dòng current + 1 dòng hint
+	lines := []string{
+		"===== PROGRESS =====",
+		fmt.Sprintf("Scanned: %d, Size: %s", scanNum, getSizeString(scanSize)),
+		fmt.Sprintf("Dealed: %d (copy %d, skip %d, err %d), OK size: %s",
+			snap.dealNum, copyCount, skipCount, errCount, okSize),
+		fmt.Sprintf("Speed: %s", speed),
+	}
+
+	if m.seekAheadEnd && m.seekAheadError == nil {
+		lines = append(lines, fmt.Sprintf("Progress: %.3f%%", m.getPrecent(snap)))
+	}
+
+	if len(currents) > 0 {
+		lines = append(lines, "Current:")
+		for _, c := range currents {
+			lines = append(lines, "  "+c)
+		}
+	}
+
+	// bọc theo terminal width để không tự wrap gây sinh thêm dòng
+	w := termWidth()
+	wrapped := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		wrapped = append(wrapped, wrapToWidth(ln, w)...)
+	}
+	return wrapped
 }
