@@ -19,12 +19,8 @@ var clearStrLen int = 0
 var clearStr string = strings.Repeat(" ", clearStrLen)
 
 func getClearStr(str string) string {
-	if clearStrLen <= len(str) {
-		clearStrLen = len(str)
-		return fmt.Sprintf("\r%s", str)
-	}
-	clearStr = strings.Repeat(" ", clearStrLen)
-	return fmt.Sprintf("\r%s\r%s", clearStr, str)
+    const eraseLine = "\x1b[2K" // ESC[2K: xóa cả dòng hiện tại
+    return "\r" + eraseLine + str
 }
 
 type Monitorer interface {
@@ -730,7 +726,7 @@ func (m *CPMonitor) getPrecent(snap *CPMonitorSnap) float64 {
 
 // Giới hạn tối đa ký tự in ra để tránh terminal tự wrap.
 // Bạn có thể chỉnh con số này nếu terminal rộng hơn.
-const progressMaxCols = 160
+const progressMaxCols = 200
 
 func truncate(s string, max int) string {
 	if max <= 3 {
