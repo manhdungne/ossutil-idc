@@ -113,48 +113,19 @@ func (m *Monitor) progressBar(finish bool, exitStat int) string {
 	return m.getFinishBar(exitStat)
 }
 
-func (m *CPMonitor) getProgressBar() string {
-    mu.RLock()
-    defer mu.RUnlock()
-
-    snap := m.getSnapshot()
-    if snap.duration < m.tickDuration {
-        return ""
-    } else {
-        m.lastSnapTime = time.Now()
-        snap.incrementSize = m.transferSize - m.lastSnapSize
-        m.lastSnapSize = snap.transferSize
-    }
-
-    // lấy danh sách current (tối đa 3 mục cho gọn)
-    currents := m.snapshotCurrents(3)
-    curStr := ""
-    if len(currents) > 0 {
-        curStr = " Current: " + strings.Join(currents, " | ")
-    }
-
-    if m.seekAheadEnd && m.seekAheadError == nil {
-        base := fmt.Sprintf(
-            "Total num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%s, Speed: %.2fKB/s%s",
-            m.totalNum, getSizeString(m.totalSize),
-            snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
-            m.getPrecent(snap), "%%",
-            m.getSpeed(snap),
-            curStr,
-        )
-        return getClearStr(base)
-    }
-
-    scanNum := max(m.totalNum, snap.dealNum)
-    scanSize := max(m.totalSize, snap.dealSize)
-    base := fmt.Sprintf(
-        "Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.%s",
-        scanNum, getSizeString(scanSize),
-        snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap),
-        m.getSpeed(snap),
-        curStr,
-    )
-    return getClearStr(base)
+func (m *Monitor) getProgressBar() string {
+	snap := m.getSnapshot()
+	if m.seekAheadEnd && m.seekAheadError == nil {
+		if snap.errNum == 0 {
+			return getClearStr(fmt.Sprintf("Total %d objects. %s %d objects, Progress: %d%s", m.totalNum, m.opStr, snap.okNum, m.getPrecent(snap), "%%"))
+		}
+		return getClearStr(fmt.Sprintf("Total %d objects. %s %d objects, Error %d objects, Progress: %d%s", m.totalNum, m.opStr, snap.okNum, snap.errNum, m.getPrecent(snap), "%%"))
+	}
+	scanNum := max(m.totalNum, snap.dealNum)
+	if snap.errNum == 0 {
+		return getClearStr(fmt.Sprintf("Scanned %d objects. %s %d objects.", scanNum, m.opStr, snap.okNum))
+	}
+	return getClearStr(fmt.Sprintf("Scanned %d objects. %s %d objects, Error %d objects.", scanNum, m.opStr, snap.okNum, snap.errNum))
 }
 
 
