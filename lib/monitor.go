@@ -486,6 +486,8 @@ type CPMonitor struct {
 	finish         bool
 	_              uint32 //Add padding to make sure the next data 64bits alignment
 	lastSnapTime   time.Time
+	mu           sync.RWMutex
+    currentByWID map[int]string
 }
 
 func (m *CPMonitor) init(op operationType) {
@@ -505,6 +507,7 @@ func (m *CPMonitor) init(op operationType) {
 	m.lastSnapSize = 0
 	m.lastSnapTime = time.Now()
 	m.tickDuration = processTickInterval * int64(time.Second)
+	m.currentByWID = make(map[int]string)
 }
 
 func (m *CPMonitor) setScanError(err error) {
@@ -576,6 +579,29 @@ func (m *CPMonitor) getSnapshot() *CPMonitorSnap {
 
 	return &snap
 }
+
+func (m *CPMonitor) SetCurrent(wid int, name string) {
+    m.mu.Lock()
+    m.currentByWID[wid] = name
+    m.mu.Unlock()
+}
+func (m *CPMonitor) ClearCurrent(wid int) {
+    m.mu.Lock()
+    delete(m.currentByWID, wid)
+    m.mu.Unlock()
+}
+func (m *CPMonitor) snapshotCurrents(max int) []string {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    res := make([]string, 0, len(m.currentByWID))
+    for _, v := range m.currentByWID {
+        if len(v) > 120 { v = v[:117] + "..." }
+        res = append(res, v)
+        if max > 0 && len(res) >= max { break }
+    }
+    return res
+}
+
 
 func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
 	if m.finish {

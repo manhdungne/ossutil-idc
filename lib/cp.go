@@ -3942,7 +3942,7 @@ func (cc *CopyCommand) batchCopyFiles(bucket *oss.Bucket, srcURL, destURL CloudU
 
     for i := 0; int64(i) < cc.cpOption.routines; i++ {
 		wid := i
-        go cc.copyConsumer(bucket, srcURL, destURL, chObjects, chError)
+        go cc.copyConsumer(wid, bucket, srcURL, destURL, chObjects, chError)
     }
 
     // sửa opDownload -> opCopy
