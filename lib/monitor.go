@@ -885,45 +885,56 @@ func byteIndexAfterRunes(s string, n int) int {
 	return len(s)
 }
 
-// render “khối dòng” không sinh lịch sử mới
+// render “khối dòng” không sinh lịch sử mới.
 // - lines: nội dung đã wrap theo terminal width
-// - Giữ con trỏ ở dòng đầu để lần sau có thể “vẽ đè”
+// - Xóa sạch phần thừa nếu lần trước có nhiều dòng hơn.
 func (r *progressRenderer) render(lines []string) string {
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
 	curRows := len(lines)
+	maxRows := r.prevRows
+	if curRows > maxRows {
+		maxRows = curRows
+	}
 
 	var b strings.Builder
 
-	// 1) đưa con trỏ về đầu khối cũ
+	// 1) đưa con trỏ về **đầu khối cũ** (đầu dòng trên cùng)
 	if r.prevRows > 0 {
-		// lên r.prevRows-1 dòng (đang ở dòng cuối khối cũ)
-		b.WriteString(fmt.Sprintf("\r\x1b[%dA", r.prevRows-1))
+		// về đầu dòng hiện tại rồi đi lên prevRows-1 dòng
+		b.WriteString("\r")
+		if r.prevRows > 1 {
+			b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
+		}
 	}
 
-	// 2) xoá & vẽ lại từng dòng
-	for i, ln := range lines {
-		// xoá cả dòng -> in nội dung
+	// 2) vẽ/xoá đủ maxRows dòng
+	for i := 0; i < maxRows; i++ {
+		// xóa cả dòng
 		b.WriteString("\r\x1b[2K")
-		b.WriteString(ln)
-		if i < curRows-1 {
-			// xuống dòng giữa các dòng trong khối
+		if i < curRows {
+			// in dòng mới
+			b.WriteString(lines[i])
+		}
+		// xuống dòng giữa các dòng trong khối
+		if i < maxRows-1 {
 			b.WriteByte('\n')
 		}
 	}
 
-	// 3) sau khi vẽ xong, đưa con trỏ về **đầu khối mới**
-	if curRows > 1 {
-		b.WriteString(fmt.Sprintf("\r\x1b[%dA", curRows-1))
+	// 3) đưa con trỏ về **đầu khối mới** để tick sau vẽ đè tiếp
+	if maxRows > 1 {
+		b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
 	} else {
-		b.WriteString("\r") // về đầu dòng
+		b.WriteString("\r")
 	}
 
 	// cập nhật số dòng đã vẽ
 	r.prevRows = curRows
 	return b.String()
 }
+
 
 // gọi khi kết thúc để “chốt” khối thành lịch sử (in xuống dòng)
 func (r *progressRenderer) finalize() string {
