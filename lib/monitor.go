@@ -935,67 +935,49 @@ func (r *progressRenderer) keep() string {
 	return b.String()
 }
 
-func (m *CPMonitor) BuildProgressPanel() []string {
-	now := time.Now()
-	// throttle 1s để mắt nhìn kịp, tránh nhấp nháy
-	if now.Sub(m.lastPanelAt) < time.Second {
-		return nil
-	}
-	m.lastPanelAt = now
+// --- CPMonitor: in theo dòng, không panel ---
+func (m *CPMonitor) BuildProgressLine() string {
+    snap := m.getSnapshot()
 
-	snap := m.getSnapshot()
-	// cập nhật tốc độ
-	snap.incrementSize = m.transferSize - m.lastSnapSize
-	m.lastSnapSize = snap.transferSize
-	m.lastSnapTime = now
+    // cập nhật tốc độ tức thời
+    now := time.Now()
+    snap.incrementSize = m.transferSize - m.lastSnapSize
+    m.lastSnapSize = snap.transferSize
+    m.lastSnapTime = now
 
-	// thống kê tổng quát
-	scanNum := max(m.totalNum, snap.dealNum)
-	scanSize := max(m.totalSize, snap.dealSize)
-	copyCount := snap.fileNum + snap.dirNum
-	skipCount := snap.skipNum + snap.skipNumDir
-	errCount := snap.errNum
-	okSize := getSizeString(snap.dealSize)
-	speed := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
+    // số liệu
+    scanNum  := max(m.totalNum, snap.dealNum)
+    scanSize := max(m.totalSize, snap.dealSize)
+    copyCnt  := snap.fileNum + snap.dirNum
+    skipCnt  := snap.skipNum + snap.skipNumDir
+    errCnt   := snap.errNum
+    okSize   := getSizeString(snap.dealSize)
+    speed    := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
 
-	// 2 đường “current” đang xử lý (rút gọn)
-	currents := m.snapshotCurrents(2)
-	for i := range currents {
-		w := termWidth()
-		if len(currents[i]) > w {
-			if w > 6 {
-				currents[i] = currents[i][:w-3] + "..."
-			} else {
-				currents[i] = currents[i][:w]
-			}
-		}
-	}
+    // current (rút gọn vừa terminal)
+    currents := m.snapshotCurrents(2)
+    curStr := ""
+    if len(currents) > 0 {
+        curStr = " | Current: " + strings.Join(currents, " | ")
+    }
 
-	// header + 3 dòng stats + (tối đa 2) dòng current + 1 dòng hint
-	lines := []string{
-		"===== PROGRESS =====",
-		fmt.Sprintf("Scanned: %d, Size: %s", scanNum, getSizeString(scanSize)),
-		fmt.Sprintf("Dealed: %d (copy %d, skip %d, err %d), OK size: %s",
-			snap.dealNum, copyCount, skipCount, errCount, okSize),
-		fmt.Sprintf("Speed: %s", speed),
-	}
+    pctStr := ""
+    if m.seekAheadEnd && m.seekAheadError == nil {
+        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
+    }
 
-	if m.seekAheadEnd && m.seekAheadError == nil {
-		lines = append(lines, fmt.Sprintf("Progress: %.3f%%", m.getPrecent(snap)))
-	}
+    // CHỈ LÀ CHUỖI BÌNH THƯỜNG, KHÔNG \r, KHÔNG ANSI
+    line := fmt.Sprintf(
+        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %s%s%s",
+        scanNum, getSizeString(scanSize),
+        snap.dealNum, copyCnt, skipCnt, errCnt,
+        okSize, speed, pctStr, curStr,
+    )
 
-	if len(currents) > 0 {
-		lines = append(lines, "Current:")
-		for _, c := range currents {
-			lines = append(lines, "  "+c)
-		}
-	}
-
-	// bọc theo terminal width để không tự wrap gây sinh thêm dòng
-	w := termWidth()
-	wrapped := make([]string, 0, len(lines))
-	for _, ln := range lines {
-		wrapped = append(wrapped, wrapToWidth(ln, w)...)
-	}
-	return wrapped
+    // cắt bớt nếu quá rộng để tránh wrap mạnh
+    w := getTermWidth() // hàm của bạn đang có
+    if len(line) > w && w > 6 {
+        line = line[:w-3] + "..."
+    }
+    return line
 }

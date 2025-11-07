@@ -1704,29 +1704,44 @@ func (cc *CopyCommand) progressBar() {
     t := time.NewTicker(1 * time.Second)
     defer t.Stop()
 
+    last := ""              // nhớ dòng trước, để tránh in trùng
+    since := time.Now()     // đảm bảo vẫn in ít nhất mỗi 5s
+
     for {
         select {
         case sig, ok := <-chProgressSignal:
             if !ok {
-                // không còn tín hiệu => cố gắng giữ panel lại rồi thoát
-                io.WriteString(os.Stderr, cpRenderer.keep())
-                return
+                return // kênh đóng -> thoát
             }
-            s := cc.monitor.progressBar(sig.finish, sig.exitStat)
-            if s != "" {
-                io.WriteString(os.Stderr, s)
+
+            line := cc.monitor.BuildProgressLine()
+            // in khi khác dòng trước hoặc quá 5s chưa in
+            if line != "" && (line != last || time.Since(since) >= 5*time.Second) {
+                fmt.Fprintln(os.Stderr, line)
+                last = line
+                since = time.Now()
             }
+
             if sig.finish {
-                // lệnh đã hoàn tất: neo panel lại, không vẽ nữa
-                io.WriteString(os.Stderr, cpRenderer.keep())
+                // in lần cuối cho chắc, rồi in tổng kết (dạng log thường)
+                if line != "" && line != last {
+                    fmt.Fprintln(os.Stderr, line)
+                }
+                // tổng kết (KHÔNG dùng getClearStr)
+                sum := cc.monitor.getWholeFinishBar()
+                if sum != "" {
+                    fmt.Fprint(os.Stderr, sum) // sum có \n sẵn
+                }
                 return
             }
 
         case <-t.C:
-            // Nhịp refresh định kỳ
-            s := cc.monitor.progressBar(false, normalExit)
-            if s != "" {
-                io.WriteString(os.Stderr, s)
+            // nhịp định kỳ 1s
+            line := cc.monitor.BuildProgressLine()
+            if line != "" && (line != last || time.Since(since) >= 5*time.Second) {
+                fmt.Fprintln(os.Stderr, line)
+                last = line
+                since = time.Now()
             }
         }
     }
