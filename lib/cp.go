@@ -126,12 +126,14 @@ type chProgressSignalType struct {
 	exitStat int
 }
 
-// BEFORE
 func freshProgress() {
-	if len(chProgressSignal) <= signalNum {
-		chProgressSignal <- chProgressSignalType{false, normalExit}
+	select {
+	case chProgressSignal <- chProgressSignalType{finish: false, exitStat: normalExit}:
+	default:
+		// hộp đã đầy -> bỏ qua tick này
 	}
 }
+
 
 
 // OssProgressListener progress listener
@@ -1354,6 +1356,7 @@ var copyCommand = CopyCommand{
 			OptionStartTime,
 			OptionEndTime,
 		},
+		panelDone chan struct{},
 	},
 }
 
@@ -1587,7 +1590,8 @@ func (cc *CopyCommand) RunCommand() error {
 	cc.monitor.init(opType)
 	cc.cpOption.opType = opType
 
-	chProgressSignal = make(chan chProgressSignalType, 10)
+	chProgressSignal   = make(chan chProgressSignalType, 32) // buffer rộng hơn
+	cc.panelDone       = make(chan struct{})
 	go cc.progressBar()
 
 	startT := time.Now().UnixNano() / 1000 / 1000
@@ -1615,6 +1619,15 @@ func (cc *CopyCommand) RunCommand() error {
 		LogInfo("begin Remove checkpointDir %s\n", cc.cpOption.cpDir)
 		os.RemoveAll(cc.cpOption.cpDir)
 	}
+
+	// báo panel kết thúc (normalExit) và chờ panel thoát
+	select {
+	case chProgressSignal <- chProgressSignalType{finish: true, exitStat: normalExit}:
+	default:
+	}
+	close(chProgressSignal)
+	<-cc.panelDone
+
 	return err
 }
 
@@ -1705,6 +1718,11 @@ var progressMu sync.Mutex
 func (cc *CopyCommand) progressBar() {
     ticker := time.NewTicker(1 * time.Second)
     defer ticker.Stop()
+	defer func() { // báo cho RunCommand biết là panel đã thoát
+        if cc.panelDone != nil {
+            close(cc.panelDone)
+        }
+    }()
 
     for {
         select {
@@ -2548,8 +2566,10 @@ func (cc *CopyCommand) downloadFiles(srcURL CloudURL, destURL FileURL) error {
 }
 
 func (cc *CopyCommand) formatResultPrompt(err error) error {
-	cc.closeProgress()
-	fmt.Printf(cc.monitor.progressBar(true, normalExit))
+	// đóng panel (normal/err sẽ do chỗ gọi quyết định; ở đây normal)
+	select { case chProgressSignal <- chProgressSignalType{finish: true, exitStat: normalExit}: default: }
+	close(chProgressSignal)
+	<-cc.panelDone
 
 	if err != nil && cc.cpOption.ctnu {
 		return nil
@@ -3035,10 +3055,11 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
             } else {
                 ferr = err
                 if !cc.cpOption.ctnu {
-                    cc.closeProgress()
-                    fmt.Printf(cc.monitor.progressBar(true, errExit))
-                    close(done)
-                    return err
+                    select { case chProgressSignal <- chProgressSignalType{finish: true, exitStat: errExit}: default: }
+					close(chProgressSignal)
+					<-cc.panelDone
+					close(done)
+					return err
                 }
             }
         }
