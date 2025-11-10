@@ -1034,20 +1034,20 @@ func (m *CPMonitor) buildPanelLines() ([]string, string) {
         okSize, speed, pctStr,
     )
 
-    // Dòng Current (nhiều worker)
-    currents := m.snapshotCurrents(4) // tuỳ chọn 3-5
-    curLine := ""
-    if len(currents) > 0 {
-        curLine = "Current: " + strings.Join(currents, " | ")
-    }
+    // //Dòng Current (nhiều worker)
+    // currents := m.snapshotCurrents(4) // tuỳ chọn 3-5
+    // curLine := ""
+    // if len(currents) > 0 {
+    //     curLine = "Current: " + strings.Join(currents, " | ")
+    // }
 
     // Bẻ dòng theo width hiện tại
     w := termWidth()
     lines := wrapToWidth(base, w)
-    if curLine != "" {
-        curWrapped := wrapToWidth(curLine, w)
-        lines = append(lines, curWrapped...)
-    }
+    // if curLine != "" {
+    //     curWrapped := wrapToWidth(curLine, w)
+    //     lines = append(lines, curWrapped...)
+    // }
 
     // Signature = nối các dòng (không kèm thời gian) để biết nội dung có đổi không
     sig := strings.Join(lines, "\n")
