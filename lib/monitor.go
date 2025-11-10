@@ -1038,9 +1038,6 @@ func (r *progressRenderer) render(lines []string) string {
 }
 
 
-
-
-
 func (m *CPMonitor) currentLevelN(n int) string {
     cur := ""
     m.mu.RLock()
