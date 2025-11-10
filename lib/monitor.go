@@ -9,6 +9,7 @@ import (
 	"os"
     "golang.org/x/term"
 	"unicode/utf8"
+	"io"
 )
 
 const (
