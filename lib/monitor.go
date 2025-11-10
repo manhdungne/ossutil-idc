@@ -531,12 +531,14 @@ func (m *CPMonitor) snapshotCurrents(max int) []string {
     defer m.mu.RUnlock()
     res := make([]string, 0, len(m.currentByWID))
     for _, v := range m.currentByWID {
-        if len(v) > 120 { v = v[:117] + "..." }
+        // BỎ cắt "...":
+        // if len(v) > 120 { v = v[:117] + "..." }
         res = append(res, v)
         if max > 0 && len(res) >= max { break }
     }
     return res
 }
+
 
 
 func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
@@ -996,4 +998,43 @@ func (m *CPMonitor) currentLevelN(n int) string {
         parts = parts[:n]
     }
     return strings.Join(parts, "/")
+}
+
+// VẼ PANEL NHIỀU DÒNG, KHÔNG CẮT "..."
+func (m *CPMonitor) BuildProgressPanel() string {
+    snap := m.getSnapshot()
+
+    now := time.Now()
+    snap.incrementSize = m.transferSize - m.lastSnapSize
+    m.lastSnapSize = snap.transferSize
+    m.lastSnapTime = now
+
+    scanNum  := max(m.totalNum, snap.dealNum)
+    scanSize := max(m.totalSize, snap.dealSize)
+    copyCnt  := snap.fileNum + snap.dirNum
+    skipCnt  := snap.skipNum + snap.skipNumDir
+    errCnt   := snap.errNum
+
+    pctStr := ""
+    if m.seekAheadEnd && m.seekAheadError == nil {
+        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
+    }
+
+    base := fmt.Sprintf(
+        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s",
+        scanNum, getSizeString(scanSize),
+        snap.dealNum, copyCnt, skipCnt, errCnt,
+        getSizeString(snap.dealSize),
+        m.getSpeed(snap), pctStr,
+    )
+
+    // nối Current (đừng cắt)
+    currents := m.snapshotCurrents(0) // 0 = lấy tất cả
+    if len(currents) > 0 {
+        base += "  Current: " + strings.Join(currents, " | ")
+    }
+
+    // Bẻ dòng theo bề rộng terminal, KHÔNG thêm "..."
+    lines := wrapToWidth(base, termWidth())
+    return cpRenderer.render(lines)
 }

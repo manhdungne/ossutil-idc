@@ -1721,7 +1721,7 @@ func (cc *CopyCommand) progressBar() {
             }
 
             // 2) in/cập nhật 1 dòng tiến độ
-            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
+            io.WriteString(os.Stderr, cc.monitor.BuildProgressPanel())
 
             if sig.finish {
                 // kết thúc: xuống dòng để trả shell
