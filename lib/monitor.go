@@ -422,6 +422,8 @@ type CPMonitor struct {
     currentByWID map[int]string
 	lastPanelAt time.Time
 	lastL4Printed string
+	minPanelInterval time.Duration // ví dụ: 5 * time.Second
+    lastPanelSig     string        // chữ ký nội dung panel lần trước
 }
 
 func (m *CPMonitor) init(op operationType) {
@@ -444,6 +446,9 @@ func (m *CPMonitor) init(op operationType) {
 	m.currentByWID = make(map[int]string)
 	m.tickDuration = 1 * int64(time.Second) // 1s/khung cho đỡ nhấp nháy
 	m.lastPanelAt = time.Now()
+	m.minPanelInterval = 5 * time.Second // hoặc 10s theo ý bạn
+    m.lastPanelAt = time.Now().Add(-m.minPanelInterval) // để lần đầu in ngay
+    m.lastPanelSig = ""
 }
 
 func (m *CPMonitor) setScanError(err error) {
@@ -997,3 +1002,86 @@ func (m *CPMonitor) currentLevelN(n int) string {
     }
     return strings.Join(parts, "/")
 }
+
+// Dựng nội dung panel nhiều dòng + trả về chữ ký để biết có đổi không
+func (m *CPMonitor) buildPanelLines() ([]string, string) {
+    snap := m.getSnapshot()
+
+    // cập nhật tốc độ (increment)
+    now := time.Now()
+    snap.incrementSize = m.transferSize - m.lastSnapSize
+    m.lastSnapSize = snap.transferSize
+    m.lastSnapTime = now
+
+    scanNum  := max(m.totalNum, snap.dealNum)
+    scanSize := max(m.totalSize, snap.dealSize)
+    copyCnt  := snap.fileNum + snap.dirNum
+    skipCnt  := snap.skipNum + snap.skipNumDir
+    errCnt   := snap.errNum
+    okSize   := getSizeString(snap.dealSize)
+    speed    := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
+
+    pctStr := ""
+    if m.seekAheadEnd && m.seekAheadError == nil {
+        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
+    }
+
+    // Dòng tổng quan (base)
+    base := fmt.Sprintf(
+        "Scanned: num=%d, size=%s\nDealed:  num=%d (copy=%d, skip=%d, err=%d)\nOK size: %s, Speed: %s%s",
+        scanNum, getSizeString(scanSize),
+        snap.dealNum, copyCnt, skipCnt, errCnt,
+        okSize, speed, pctStr,
+    )
+
+    // Dòng Current (nhiều worker)
+    currents := m.snapshotCurrents(4) // tuỳ chọn 3-5
+    curLine := ""
+    if len(currents) > 0 {
+        curLine = "Current: " + strings.Join(currents, " | ")
+    }
+
+    // Bẻ dòng theo width hiện tại
+    w := termWidth()
+    lines := wrapToWidth(base, w)
+    if curLine != "" {
+        curWrapped := wrapToWidth(curLine, w)
+        lines = append(lines, curWrapped...)
+    }
+
+    // Signature = nối các dòng (không kèm thời gian) để biết nội dung có đổi không
+    sig := strings.Join(lines, "\n")
+    return lines, sig
+}
+
+// Chỉ render nếu đủ điều kiện: qua interval & khác signature
+func (m *CPMonitor) RenderPanelTick(force bool) string {
+    // force=true dùng cho lần kết thúc hoặc khi bạn muốn ép vẽ ngay
+    if !force && time.Since(m.lastPanelAt) < m.minPanelInterval {
+        return ""
+    }
+
+    lines, sig := m.buildPanelLines()
+    if !force && sig == m.lastPanelSig {
+        // không có thay đổi đáng kể → không vẽ lại
+        m.lastPanelAt = time.Now()
+        return ""
+    }
+
+    m.lastPanelSig = sig
+    m.lastPanelAt = time.Now()
+    return cpRenderer.render(lines) // overwrite khối cũ (nhiều dòng), không sinh thêm dòng mới
+}
+
+
+func (m *CPMonitor) MaybePrintL4Line(level int) string {
+    l := m.currentLevelN(level) // level=4 hoặc 5 tuỳ ý
+    if l == "" || l == m.lastL4Printed {
+        return ""
+    }
+    m.lastL4Printed = l
+    // Xuống dòng mới, KHÔNG dùng renderer (để giữ mốc)
+    return getClearStr("[Current@L4] " + l + "\n")
+}
+
+

@@ -1707,49 +1707,43 @@ func (cc *CopyCommand) progressBar() {
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok {
-                return
+            if !ok { return }
+
+            // 1) Mốc L4 (in rời nếu đổi)
+            if s := cc.monitor.MaybePrintL4Line(5); s != "" {
+                fmt.Fprint(os.Stderr, s)
             }
 
-            // 1) nếu prefix cấp-4 đổi -> in 1 dòng mốc
-            l4 := cc.monitor.currentLevelN(5)
-            if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                // kết thúc dòng hiện tại (xuống dòng), rồi in mốc
-                fmt.Fprintln(os.Stderr)
-                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
-                cc.monitor.lastL4Printed = l4
+            // 2) Panel nhiều dòng, không spam (rate-limit + đổi signature mới vẽ)
+            if s := cc.monitor.RenderPanelTick(false); s != "" {
+                fmt.Fprint(os.Stderr, s)
             }
-
-            // 2) in/cập nhật 1 dòng tiến độ
-            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
 
             if sig.finish {
-                // kết thúc: xuống dòng để trả shell
-                fmt.Fprintln(os.Stderr)
-                // tổng kết dạng log thường (nếu muốn)
+                // Ép vẽ lần cuối (force=true) để chốt số đẹp
+                if s := cc.monitor.RenderPanelTick(true); s != "" {
+                    fmt.Fprint(os.Stderr, s)
+                }
+                // Đẩy con trỏ xuống, giữ panel (không xoá), rồi in tổng kết
+                fmt.Fprint(os.Stderr, cpRenderer.keep())
                 sum := cc.monitor.getWholeFinishBar()
                 if sum != "" {
-                    // ensure không dùng getClearStr ở tổng kết
-                    if strings.HasPrefix(sum, "\r") {
-                        sum = strings.TrimPrefix(sum, "\r")
-                    }
-                    fmt.Fprint(os.Stderr, sum)
+                    fmt.Fprint(os.Stderr, strings.TrimPrefix(sum, "\r"))
                 }
                 return
             }
 
         case <-ticker.C:
-            // tick định kỳ để refresh nếu không có tín hiệu
-            l4 := cc.monitor.currentLevelN(5)
-            if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                fmt.Fprintln(os.Stderr)
-                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
-                cc.monitor.lastL4Printed = l4
+            if s := cc.monitor.MaybePrintL4Line(5); s != "" {
+                fmt.Fprint(os.Stderr, s)
             }
-            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
+            if s := cc.monitor.RenderPanelTick(false); s != "" {
+                fmt.Fprint(os.Stderr, s)
+            }
         }
     }
 }
+
 
 
 func (cc *CopyCommand) closeProgress() {
