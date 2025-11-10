@@ -127,14 +127,10 @@ type chProgressSignalType struct {
 }
 
 func freshProgress() {
-	select {
-	case chProgressSignal <- chProgressSignalType{finish: false, exitStat: normalExit}:
-	default:
-		// hộp đã đầy -> bỏ qua tick này
+	if len(chProgressSignal) <= signalNum {
+		chProgressSignal <- chProgressSignalType{false, normalExit}
 	}
 }
-
-
 
 // OssProgressListener progress listener
 type OssProgressListener struct {
@@ -1286,7 +1282,6 @@ type CopyCommand struct {
     s3Err    error
 
 	failLog *FailCollector
-	panelDone chan struct{}
 }
 
 var copyCommand = CopyCommand{
@@ -1590,8 +1585,7 @@ func (cc *CopyCommand) RunCommand() error {
 	cc.monitor.init(opType)
 	cc.cpOption.opType = opType
 
-	chProgressSignal   = make(chan chProgressSignalType, 32) // buffer rộng hơn
-	cc.panelDone       = make(chan struct{})
+	chProgressSignal = make(chan chProgressSignalType, 10)
 	go cc.progressBar()
 
 	startT := time.Now().UnixNano() / 1000 / 1000
@@ -1619,15 +1613,6 @@ func (cc *CopyCommand) RunCommand() error {
 		LogInfo("begin Remove checkpointDir %s\n", cc.cpOption.cpDir)
 		os.RemoveAll(cc.cpOption.cpDir)
 	}
-
-	// báo panel kết thúc (normalExit) và chờ panel thoát
-	select {
-	case chProgressSignal <- chProgressSignalType{finish: true, exitStat: normalExit}:
-	default:
-	}
-	close(chProgressSignal)
-	<-cc.panelDone
-
 	return err
 }
 
@@ -1716,54 +1701,56 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 var progressMu sync.Mutex
 
 func (cc *CopyCommand) progressBar() {
-	defer func() { // báo cho RunCommand biết là panel đã thoát
-        if cc.panelDone != nil {
-            close(cc.panelDone)
-        }
-    }()
-	ticker := time.NewTicker(1 * time.Second)
+    ticker := time.NewTicker(1 * time.Second)
     defer ticker.Stop()
 
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok { return }
+            if !ok {
+                return
+            }
 
+            // 1) nếu prefix cấp-4 đổi -> in 1 dòng mốc
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                panelLogf("[Current@L4] %s\n", l4)
+                // kết thúc dòng hiện tại (xuống dòng), rồi in mốc
+                fmt.Fprintln(os.Stderr)
+                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
-            if s := cc.monitor.RenderPanelTick(false); s != "" {
-                fmt.Fprint(os.Stderr, s)
-            }
+
+            // 2) in/cập nhật 1 dòng tiến độ
+            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
 
             if sig.finish {
-                if s := cc.monitor.RenderPanelTick(true); s != "" {
-                    fmt.Fprint(os.Stderr, s)
-                }
-                // đóng panel, rồi in tổng kết
-                fmt.Fprint(os.Stderr, cpRenderer.keep())
-                sum := cc.monitor.getFinishBar(sig.exitStat)
+                // kết thúc: xuống dòng để trả shell
+                fmt.Fprintln(os.Stderr)
+                // tổng kết dạng log thường (nếu muốn)
+                sum := cc.monitor.getWholeFinishBar()
                 if sum != "" {
-                    if strings.HasPrefix(sum, "\r") { sum = strings.TrimPrefix(sum, "\r") }
+                    // ensure không dùng getClearStr ở tổng kết
+                    if strings.HasPrefix(sum, "\r") {
+                        sum = strings.TrimPrefix(sum, "\r")
+                    }
                     fmt.Fprint(os.Stderr, sum)
                 }
                 return
             }
 
         case <-ticker.C:
+            // tick định kỳ để refresh nếu không có tín hiệu
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                panelLogf("[Current@L4] %s\n", l4)
+                fmt.Fprintln(os.Stderr)
+                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
-            if s := cc.monitor.RenderPanelTick(false); s != "" {
-                fmt.Fprint(os.Stderr, s)
-            }
+            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
         }
     }
 }
+
 
 func (cc *CopyCommand) closeProgress() {
 	signalNum = -1
@@ -2322,22 +2309,16 @@ func (cc *CopyCommand) formatSnapshotKey(absPath, bucket, object string) string 
 }
 
 func (cc *CopyCommand) confirm(str string) bool {
-    mu.Lock()
-    defer mu.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
 
-    // ĐÓNG panel trước khi hỏi người dùng
-    fmt.Fprint(os.Stderr, cpRenderer.keep())
-
-    var val string
-    // Hỏi ra stdout (hoặc stderr đều được, nhưng đã keep panel)
-    fmt.Printf("cp: overwrite %q (y or N)? ", str)
-    if _, err := fmt.Scanln(&val); err != nil {
-        return false
-    }
-    val = strings.ToLower(strings.TrimSpace(val))
-    return val == "y" || val == "yes"
+	var val string
+	fmt.Printf(getClearStr(fmt.Sprintf("cp: overwrite \"%s\"(y or N)? ", str)))
+	if _, err := fmt.Scanln(&val); err != nil || (strings.ToLower(val) != "yes" && strings.ToLower(val) != "y") {
+		return false
+	}
+	return true
 }
-
 
 func (cc *CopyCommand) ossPutObjectRetry(bucket *oss.Bucket, objectName string, content string) error {
 	retryTimes, _ := GetInt(OptionRetryTimes, cc.command.options)
@@ -2566,24 +2547,14 @@ func (cc *CopyCommand) downloadFiles(srcURL CloudURL, destURL FileURL) error {
 }
 
 func (cc *CopyCommand) formatResultPrompt(err error) error {
-    if cc.cpOption.opType == operationTypeCopy {
-        // ✨ Đường copy: KHÔNG in panel ở đây nữa
-        if err != nil && cc.cpOption.ctnu {
-            return nil
-        }
-        return err
-    }
+	cc.closeProgress()
+	fmt.Printf(cc.monitor.progressBar(true, normalExit))
 
-    // Download giữ nguyên hành vi cũ:
-    cc.closeProgress()
-    fmt.Printf(cc.monitor.progressBar(true, normalExit))
-
-    if err != nil && cc.cpOption.ctnu {
-        return nil
-    }
-    return err
+	if err != nil && cc.cpOption.ctnu {
+		return nil
+	}
+	return err
 }
-
 
 func (cc *CopyCommand) adjustSrcURLForCommand(srcURL *CloudURL, bSyncCommand bool) {
 	if !bSyncCommand {
@@ -3063,11 +3034,10 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
             } else {
                 ferr = err
                 if !cc.cpOption.ctnu {
-                    select { case chProgressSignal <- chProgressSignalType{finish: true, exitStat: errExit}: default: }
-					close(chProgressSignal)
-					<-cc.panelDone
-					close(done)
-					return err
+                    cc.closeProgress()
+                    fmt.Printf(cc.monitor.progressBar(true, errExit))
+                    close(done)
+                    return err
                 }
             }
         }
@@ -3107,21 +3077,12 @@ func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
 		}
 
 		go cc.objectStatistic(bucket, srcURL)
-		err := cc.copySingleFileWithReport(bucket, objectInfoType{...}, srcURL, destURL)
-
-		// ✨ báo kết thúc panel & đợi dừng hoàn toàn
-		select {
-		case chProgressSignal <- chProgressSignalType{finish: true, exitStat: normalExit}:
-		default:
-		}
-		close(chProgressSignal)
-		if cc.panelDone != nil { <-cc.panelDone }
-
-		// Giữ nguyên “quy tắc ctnu”: trả err nếu không ctnu
-		if err != nil && cc.cpOption.ctnu {
-			return nil
-		}
-		return err
+		wid := 0 // dùng 0 cho single
+		cc.monitor.SetCurrent(wid, "<src> -> <dest>")
+		// ... gọi hàm thực thi ...
+		cc.monitor.ClearCurrent(wid)
+		err := cc.copySingleFileWithReport(bucket, objectInfoType{prefix, relativeKey, -1, time.Now()}, srcURL, destURL)
+		return cc.formatResultPrompt(err)
 	}
 
 	if destURL.object != "" && !strings.HasSuffix(destURL.object, "/") {
