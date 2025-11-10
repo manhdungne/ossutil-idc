@@ -1273,8 +1273,8 @@ Usage:
 
 // CopyCommand is the command upload, download and copy objects
 type CopyCommand struct {
-	monitor  CPMonitor //Put first for atomic op on some fileds
-	command  Command
+	monitor  CPMonitor //Struct theo dõi tiến độ & thống kê
+	command  Command //
 	cpOption copyOptionType
 
 	s3Once   sync.Once

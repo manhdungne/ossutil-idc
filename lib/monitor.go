@@ -869,21 +869,31 @@ func termWidth() int {
 	return w - 2
 }
 
+// Soft-wrap theo độ rộng ký tự (rune), ưu tiên cắt ở khoảng trắng.
+// Không thêm "..." – chỉ xuống dòng trong khối.
 func wrapToWidth(s string, width int) []string {
 	if width <= 4 {
-		if len(s) <= width {
-			return []string{s}
+		return []string{s} // quá nhỏ, thôi kệ
+	}
+	var out []string
+	runes := []rune(s)
+
+	for len(runes) > width {
+		// tìm khoảng trắng gần nhất bên trái vị trí width
+		cut := width
+		for i := width; i >= 0; i-- {
+			if runes[i] == ' ' || runes[i] == '\t' {
+				cut = i + 1 // cắt sau space
+				break
+			}
 		}
-		return []string{s[:width-3] + "..."}
+		out = append(out, string(runes[:cut]))
+		runes = runes[cut:]
 	}
-	lines := []string{}
-	for len(s) > width {
-		lines = append(lines, s[:width])
-		s = s[width:]
-	}
-	lines = append(lines, s)
-	return lines
+	out = append(out, string(runes))
+	return out
 }
+
 
 func (r *progressRenderer) render(lines []string) string {
 	if len(lines) == 0 {
