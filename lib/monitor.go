@@ -586,7 +586,7 @@ func (m *CPMonitor) getProgressBar() string {
         m.getSpeed(snap), pctStr,
     )
     // Tự wrap theo width, KHÔNG thêm “...”
-    lines := wrapToWidth(line, termWidth())
+    lines := wrapToWidthMaxLines(line, termWidth(), 3)
     return cpRenderer.render(lines)
 }
 
@@ -894,6 +894,21 @@ func wrapToWidth(s string, width int) []string {
 	return out
 }
 
+func wrapToWidthMaxLines(s string, width, maxLines int) []string {
+    lines := wrapToWidthSoftRune(s, width) // soft wrap theo rune/space
+    if maxLines > 0 && len(lines) > maxLines {
+        hidden := len(lines) - (maxLines - 1)
+        head := lines[:maxLines-1]
+        tail := fmt.Sprintf("… (+%d more)", hidden)
+        // cắt tail nếu quá rộng
+        r := []rune(tail)
+        if len(r) > width { tail = string(r[:width]) }
+        return append(head, tail)
+    }
+    return lines
+}
+
+
 
 func (r *progressRenderer) render(lines []string) string {
 	if len(lines) == 0 {
@@ -936,22 +951,23 @@ func (r *progressRenderer) render(lines []string) string {
 	return b.String()
 }
 
-// Giữ panel lại khi kết thúc (không xoá), chỉ đẩy con trỏ xuống dưới
 func (r *progressRenderer) keep() string {
-	if r.prevRows == 0 {
-		return "\n"
-	}
-	var b strings.Builder
-	b.WriteString("\r")
-	// nhảy xuống dưới cùng của khối
-	for i := 1; i < r.prevRows; i++ {
-		b.WriteByte('\n')
-	}
-	b.WriteString("\n")
-	// reset, nhưng không xoá panel
-	r.prevRows = 0
-	return b.String()
+    if r.prevRows == 0 {
+        return ""
+    }
+    var b strings.Builder
+    // Về đầu dòng của khối
+    b.WriteString("\r")
+    // Di chuyển con trỏ xuống cuối khối (prevRows-1 dòng)
+    if r.prevRows > 1 {
+        b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1)) // CSI n B = cursor down n lines
+    }
+    // Nhảy sang đầu dòng kế tiếp của panel để nhường chỗ log (không in \n thật)
+    b.WriteString("\x1b[E") // move to next line, col 1 (có thể scroll 1 nếu ở cuối màn hình)
+    r.prevRows = 0
+    return b.String()
 }
+
 
 // 1 dòng tiến độ đủ thông tin, KHÔNG có '\n', dùng getClearStr để overwrite
 func (m *CPMonitor) BuildProgressLineOneLine() string {
