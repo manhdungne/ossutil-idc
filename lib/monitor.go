@@ -517,14 +517,10 @@ func (m *CPMonitor) getSnapshot() *CPMonitorSnap {
 }
 
 func (m *CPMonitor) SetCurrent(wid int, name string) {
-    m.mu.Lock()
-    m.currentByWID[wid] = name
-    m.mu.Unlock()
+    
 }
 func (m *CPMonitor) ClearCurrent(wid int) {
-    m.mu.Lock()
-    delete(m.currentByWID, wid)
-    m.mu.Unlock()
+    
 }
 func (m *CPMonitor) snapshotCurrents(max int) []string {
     m.mu.RLock()
@@ -571,25 +567,19 @@ func (m *CPMonitor) getProgressBar() string {
     skipCount := snap.skipNum + snap.skipNumDir
     errCount  := snap.errNum
 
-    currents := m.snapshotCurrents(2)
-    curStr := ""
-    if len(currents) > 0 {
-        curStr = " | Current: " + strings.Join(currents, " | ")
-    }
     pctStr := ""
-    if m.seekAheadEnd && m.seekAheadError == nil {
-        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
-    }
+	if m.seekAheadEnd && m.seekAheadError == nil {
+		pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
+	}
 
-    line := fmt.Sprintf(
-        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s%s",
-        scanNum, getSizeString(scanSize),
-        snap.dealNum, copyCount, skipCount, errCount,
-        getSizeString(snap.dealSize),
-        m.getSpeed(snap), pctStr, curStr,
-    )
-
-    // wrap theo bề rộng hiện tại
+	line := fmt.Sprintf(
+		"Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s",
+		scanNum, getSizeString(scanSize),
+		snap.dealNum, copyCount, skipCount, errCount,
+		getSizeString(snap.dealSize),
+		m.getSpeed(snap), pctStr,
+	)
+		// wrap theo bề rộng hiện tại
     lines := wrapToWidth(line, termWidth())
 
     // trả về chuỗi render khối (không có '\n' ở cuối)
