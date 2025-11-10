@@ -850,15 +850,14 @@ type progressRenderer struct {
 	prevRows int
 }
 
-func panelLogf(format string, a ...any) {
-    // Hạ panel xuống dưới, reset prevRows=0 bên trong keep()
+func panelLogf(format string, a ...interface{}) {
     io.WriteString(os.Stderr, cpRenderer.keep())
-    // In log riêng, mỗi log là 1 dòng độc lập
     fmt.Fprintf(os.Stderr, format, a...)
     if !strings.HasSuffix(format, "\n") {
         fmt.Fprintln(os.Stderr)
     }
 }
+
 
 
 func termWidth() int {
