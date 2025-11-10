@@ -1709,35 +1709,41 @@ func (cc *CopyCommand) progressBar() {
         case sig, ok := <-chProgressSignal:
             if !ok { return }
 
-            // In mốc L4 nếu đổi — dùng panelLogf để không bị panel chồm lên xoá
+            progressMu.Lock()
+            // MỐC L4 (ghi log “panel-aware”)
             if l4 := cc.monitor.currentLevelN(5); l4 != "" && l4 != cc.monitor.lastL4Printed {
                 panelLogf("[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
 
-            // Vẽ lại panel (nhiều dòng, đầy đủ thông tin, không “...”)
+            // VẼ PANEL
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
 
             if sig.finish {
                 // Hạ panel rồi in tổng kết
                 io.WriteString(os.Stderr, cpRenderer.keep())
                 sum := cc.monitor.getWholeFinishBar()
-                if strings.HasPrefix(sum, "\r") { // phòng getClearStr
+                if strings.HasPrefix(sum, "\r") {
                     sum = strings.TrimPrefix(sum, "\r")
                 }
                 fmt.Fprint(os.Stderr, sum)
+                progressMu.Unlock()
                 return
             }
+            progressMu.Unlock()
 
         case <-ticker.C:
+            progressMu.Lock()
             if l4 := cc.monitor.currentLevelN(5); l4 != "" && l4 != cc.monitor.lastL4Printed {
                 panelLogf("[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
+            progressMu.Unlock()
         }
     }
 }
+
 
 
 
