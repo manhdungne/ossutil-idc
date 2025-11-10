@@ -1707,22 +1707,25 @@ func (cc *CopyCommand) progressBar() {
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok { return }
+            if !ok {
+                return
+            }
 
-            // L4 mốc
+            // In mốc L4 mỗi khi đổi (giữ nguyên như cũ)
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                fmt.Fprintln(os.Stderr) // tách panel
+                fmt.Fprintln(os.Stderr) // tách panel ra
                 fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
 
-            // ⬇️ sử dụng panel nhiều dòng (không cắt), tự wrap theo width
+            // Panel nhiều dòng → in đầy đủ, không “...”
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
 
             if sig.finish {
                 // đóng panel để trả prompt rồi in tổng kết
                 fmt.Fprint(os.Stderr, cpRenderer.keep())
+
                 sum := cc.monitor.getWholeFinishBar()
                 if strings.HasPrefix(sum, "\r") {
                     sum = strings.TrimPrefix(sum, "\r")
@@ -1732,13 +1735,13 @@ func (cc *CopyCommand) progressBar() {
             }
 
         case <-ticker.C:
+            // Tick định kỳ → vẫn mốc L4 + panel
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
                 fmt.Fprintln(os.Stderr)
                 fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
-            // ⬇️ dùng panel nhiều dòng
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
         }
     }

@@ -562,37 +562,33 @@ func (m *CPMonitor) getProgressBar() string {
     snap.incrementSize = m.transferSize - m.lastSnapSize
     m.lastSnapSize = snap.transferSize
 
-    // compose đủ thông tin (giống bạn đang làm)
-    scanNum := max(m.totalNum, snap.dealNum)
-    scanSize := max(m.totalSize, snap.dealSize)
+    scanNum   := max(m.totalNum, snap.dealNum)
+    scanSize  := max(m.totalSize, snap.dealSize)
     copyCount := snap.fileNum + snap.dirNum
     skipCount := snap.skipNum + snap.skipNumDir
     errCount  := snap.errNum
 
-    currents := m.snapshotCurrents(2)
-    curStr := ""
-    if len(currents) > 0 {
-        curStr = " | Current: " + strings.Join(currents, " | ")
-    }
+    // KHÔNG in “Current object” nữa
+    // currents := m.snapshotCurrents(2) // <- bỏ
+    // curStr := ""                      // <- bỏ
+
     pctStr := ""
     if m.seekAheadEnd && m.seekAheadError == nil {
         pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
     }
 
     line := fmt.Sprintf(
-        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s%s",
+        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s",
         scanNum, getSizeString(scanSize),
         snap.dealNum, copyCount, skipCount, errCount,
         getSizeString(snap.dealSize),
-        m.getSpeed(snap), pctStr, curStr,
+        m.getSpeed(snap), pctStr,
     )
-
-    // wrap theo bề rộng hiện tại
+    // Tự wrap theo width, KHÔNG thêm “...”
     lines := wrapToWidth(line, termWidth())
-
-    // trả về chuỗi render khối (không có '\n' ở cuối)
     return cpRenderer.render(lines)
 }
+
 
 
 func (m *CPMonitor) getFinishBar(exitStat int) string {
