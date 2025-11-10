@@ -908,7 +908,7 @@ func (r *progressRenderer) render(lines []string) string {
 
     var b strings.Builder
 +   // TẮT auto-wrap để terminal không tự xuống dòng khi chạm mép
-+   b.WriteString("\x1b[?7l")
+    b.WriteString("\x1b[?7l")
 
     // quay về đầu khối cũ
     if r.prevRows > 0 {
@@ -936,8 +936,8 @@ func (r *progressRenderer) render(lines []string) string {
         b.WriteString("\r")
     }
 
-+   // BẬT lại auto-wrap
-+   b.WriteString("\x1b[?7h")
+   // BẬT lại auto-wrap
+    b.WriteString("\x1b[?7h")
 
     r.prevRows = curRows
     return b.String()
@@ -948,13 +948,13 @@ func (r *progressRenderer) keep() string {
         return ""
     }
     var b strings.Builder
-+   b.WriteString("\x1b[?7l") // off wrap
+    b.WriteString("\x1b[?7l") // off wrap
     b.WriteString("\r")
     if r.prevRows > 1 {
         b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1))
     }
     b.WriteString("\x1b[E")
-+   b.WriteString("\x1b[?7h") // on wrap
+    b.WriteString("\x1b[?7h") // on wrap
     r.prevRows = 0
     return b.String()
 }
