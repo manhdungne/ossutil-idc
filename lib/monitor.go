@@ -1003,11 +1003,8 @@ func (m *CPMonitor) currentLevelN(n int) string {
     return strings.Join(parts, "/")
 }
 
-// Dựng nội dung panel nhiều dòng + trả về chữ ký để biết có đổi không
 func (m *CPMonitor) buildPanelLines() ([]string, string) {
     snap := m.getSnapshot()
-
-    // cập nhật tốc độ (increment)
     now := time.Now()
     snap.incrementSize = m.transferSize - m.lastSnapSize
     m.lastSnapSize = snap.transferSize
@@ -1019,37 +1016,24 @@ func (m *CPMonitor) buildPanelLines() ([]string, string) {
     skipCnt  := snap.skipNum + snap.skipNumDir
     errCnt   := snap.errNum
     okSize   := getSizeString(snap.dealSize)
-    speed    := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
+    speedStr := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
 
     pctStr := ""
     if m.seekAheadEnd && m.seekAheadError == nil {
         pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
     }
 
-    // Dòng tổng quan (base)
-    base := fmt.Sprintf(
-        "Scanned: num=%d, size=%s\nDealed:  num=%d (copy=%d, skip=%d, err=%d)\nOK size: %s, Speed: %s%s",
-        scanNum, getSizeString(scanSize),
-        snap.dealNum, copyCnt, skipCnt, errCnt,
-        okSize, speed, pctStr,
-    )
+    // TẠO TỪNG DÒNG RIÊNG – KHÔNG có '\n'
+    line1 := fmt.Sprintf("Scanned: num=%d, size=%s", scanNum, getSizeString(scanSize))
+    line2 := fmt.Sprintf("Dealed:  num=%d (copy=%d, skip=%d, err=%d)", snap.dealNum, copyCnt, skipCnt, errCnt)
+    line3 := fmt.Sprintf("OK size: %s, Speed: %s%s", okSize, speedStr, pctStr)
 
-    // //Dòng Current (nhiều worker)
-    // currents := m.snapshotCurrents(4) // tuỳ chọn 3-5
-    // curLine := ""
-    // if len(currents) > 0 {
-    //     curLine = "Current: " + strings.Join(currents, " | ")
-    // }
-
-    // Bẻ dòng theo width hiện tại
     w := termWidth()
-    lines := wrapToWidth(base, w)
-    // if curLine != "" {
-    //     curWrapped := wrapToWidth(curLine, w)
-    //     lines = append(lines, curWrapped...)
-    // }
+    var lines []string
+    lines = append(lines, wrapToWidth(line1, w)...)
+    lines = append(lines, wrapToWidth(line2, w)...)
+    lines = append(lines, wrapToWidth(line3, w)...)
 
-    // Signature = nối các dòng (không kèm thời gian) để biết nội dung có đổi không
     sig := strings.Join(lines, "\n")
     return lines, sig
 }
