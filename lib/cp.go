@@ -1704,48 +1704,73 @@ func (cc *CopyCommand) progressBar() {
     ticker := time.NewTicker(1 * time.Second)
     defer ticker.Stop()
 
+    // Khởi tạo scroll region + fixed-bottom một lần
+    rows, _, _ := term.GetSize(int(os.Stderr.Fd()))
+    if rows <= 0 { rows = 24 }
+    panelRows := 3 // tuỳ bạn, nên khớp với wrapToWidthMaxLines(..., ..., 3)
+
+    // Bật chế độ fixed-bottom (khóa scroll region)
+    io.WriteString(os.Stderr, cpRenderer.setFixedBottom(rows, panelRows))
+
+    // (tuỳ chọn) đưa con trỏ về cuối vùng log ngay từ đầu
+    io.WriteString(os.Stderr, fmt.Sprintf("\x1b[%d;1H", rows - panelRows))
+
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok { return }
+            if !ok {
+                // Thoát: trả scroll region về mặc định
+                io.WriteString(os.Stderr, cpRenderer.unsetFixedBottom())
+                return
+            }
 
-            progressMu.Lock()
-            // MỐC L4 (ghi log “panel-aware”)
+            // (tuỳ chọn) handle resize: nếu rows đổi, cập nhật lại scroll region
+            if r, _, _ := term.GetSize(int(os.Stderr.Fd())); r > 0 && r != rows {
+                rows = r
+                // Cập nhật vùng cuộn + state renderer
+                io.WriteString(os.Stderr, cpRenderer.setFixedBottom(rows, panelRows))
+            }
+
+            // In mốc L4 nếu đổi
             if l4 := cc.monitor.currentLevelN(5); l4 != "" && l4 != cc.monitor.lastL4Printed {
-                panelLogf("[Current@L4] %s\n", l4)
+                io.WriteString(os.Stderr, cpRenderer.keep()) // nhường con trỏ cho log
+                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
 
-            // VẼ PANEL
+            // Vẽ panel (nhiều dòng, đã wrap mềm)
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
 
             if sig.finish {
-                // Hạ panel rồi in tổng kết
+                // Trả con trỏ về cuối log, in tổng kết dưới panel hoặc ở vùng log tuỳ bạn
                 io.WriteString(os.Stderr, cpRenderer.keep())
                 sum := cc.monitor.getWholeFinishBar()
                 if strings.HasPrefix(sum, "\r") {
                     sum = strings.TrimPrefix(sum, "\r")
                 }
                 fmt.Fprint(os.Stderr, sum)
-                progressMu.Unlock()
+
+                // Khôi phục scroll region mặc định
+                io.WriteString(os.Stderr, cpRenderer.unsetFixedBottom())
                 return
             }
-            progressMu.Unlock()
 
         case <-ticker.C:
-            progressMu.Lock()
+            // resize check
+            if r, _, _ := term.GetSize(int(os.Stderr.Fd())); r > 0 && r != rows {
+                rows = r
+                io.WriteString(os.Stderr, cpRenderer.setFixedBottom(rows, panelRows))
+            }
+
             if l4 := cc.monitor.currentLevelN(5); l4 != "" && l4 != cc.monitor.lastL4Printed {
-                panelLogf("[Current@L4] %s\n", l4)
+                io.WriteString(os.Stderr, cpRenderer.keep())
+                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
-            progressMu.Unlock()
         }
     }
 }
-
-
-
 
 
 func (cc *CopyCommand) closeProgress() {

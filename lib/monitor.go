@@ -893,10 +893,112 @@ func wrapToWidthSoftRune(s string, width int) []string {
 	return out
 }
 
+// progressRenderer.go (hoặc chỗ bạn đang khai báo progressRenderer)
+type progressRenderer struct {
+    prevRows    int
+    fixedBottom bool
+    rows        int // tổng số dòng terminal
+    panelRows   int // số dòng panel ở đáy
+}
 
+func (r *progressRenderer) setFixedBottom(rows, panelRows int) string {
+    if rows <= 0 { rows = 24 }
+    if panelRows <= 0 { panelRows = 3 }
+    r.fixedBottom = true
+    r.rows = rows
+    r.panelRows = panelRows
 
+    // Đặt scroll region: 1 .. (rows - panelRows)
+    // CSI <top> ; <bottom> r
+    top := 1
+    bottom := rows - panelRows
+    if bottom < top { bottom = rows } // fallback không khóa nếu panelRows quá lớn
+    return fmt.Sprintf("\x1b[%d;%dr", top, bottom)
+}
 
+// Bỏ fixed-bottom mode, trả scroll region về mặc định toàn màn hình
+func (r *progressRenderer) unsetFixedBottom() string {
+    r.fixedBottom = false
+    r.rows = 0
+    r.panelRows = 0
+    r.prevRows = 0
+    return "\x1b[r" // reset scroll region
+}
+
+// Vẽ panel ở đáy màn hình, không “quay lên” bằng CSI A nữa.
+// Giả định: scroll region đã được set với setFixedBottom().
+func (r *progressRenderer) renderFixedBottom(lines []string) string {
+    if len(lines) == 0 {
+        lines = []string{""}
+    }
+    // panel luôn có tối thiểu r.panelRows dòng, phần thừa clear trắng
+    curRows := len(lines)
+    if curRows > r.panelRows {
+        curRows = r.panelRows
+    }
+
+    // Tính toạ độ top của panel
+    rows := r.rows
+    if rows <= 0 { rows, _, _ = term.GetSize(int(os.Stderr.Fd())) }
+    if rows <= 0 { rows = 24 }
+    startRow := rows - r.panelRows + 1
+    if startRow < 1 { startRow = 1 }
+
+    var b strings.Builder
+
+    // TẮT auto-wrap (tránh terminal tự xuống dòng phá panel)
+    b.WriteString("\x1b[?7l")
+
+    // Nhảy tới dòng đầu panel
+    // CSI <row> ; 1 H
+    b.WriteString(fmt.Sprintf("\x1b[%d;1H", startRow))
+
+    // Vẽ đủ r.panelRows dòng: ghi + clear
+    for i := 0; i < r.panelRows; i++ {
+        b.WriteString("\r\x1b[2K") // clear whole line
+        if i < len(lines) {
+            b.WriteString(lines[i])
+        }
+        if i < r.panelRows-1 {
+            b.WriteByte('\n')
+        }
+    }
+
+    // Đưa con trỏ về cuối vùng log (dòng rows - panelRows), cột 1
+    b.WriteString(fmt.Sprintf("\x1b[%d;1H", rows - r.panelRows))
+
+    // BẬT lại auto-wrap
+    b.WriteString("\x1b[?7h")
+
+    r.prevRows = len(lines)
+    return b.String()
+}
+
+// Giữ panel, nhường con trỏ cho log in tiếp ở cuối vùng log.
+// KHÁC trước: không in thêm '\n' thừa, không làm panel biến mất.
+func (r *progressRenderer) keep() string {
+    if !r.fixedBottom || r.rows == 0 || r.panelRows == 0 {
+        // fallback: như cũ, hạ khối nhiều dòng
+        if r.prevRows == 0 { return "" }
+        var b strings.Builder
+        b.WriteString("\r")
+        if r.prevRows > 1 {
+            b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1))
+        }
+        b.WriteString("\x1b[E")
+        r.prevRows = 0
+        return b.String()
+    }
+    // fixedBottom: chỉ cần đưa con trỏ về cuối vùng log
+    return fmt.Sprintf("\x1b[%d;1H", r.rows - r.panelRows)
+}
+
+// Giữ render cũ làm fallback (khi không bật fixedBottom)
 func (r *progressRenderer) render(lines []string) string {
+    if r.fixedBottom {
+        return r.renderFixedBottom(lines)
+    }
+    // ====== code cũ của bạn (multi-line panel “bay theo con trỏ”) ======
     if len(lines) == 0 {
         lines = []string{""}
     }
@@ -907,18 +1009,14 @@ func (r *progressRenderer) render(lines []string) string {
     }
 
     var b strings.Builder
-    // TẮT auto-wrap để terminal không tự xuống dòng khi chạm mép
-    b.WriteString("\x1b[?7l")
+    b.WriteString("\x1b[?7l") // off wrap
 
-    // quay về đầu khối cũ
     if r.prevRows > 0 {
         b.WriteString("\r")
         if r.prevRows > 1 {
             b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
         }
     }
-
-    // vẽ đủ maxRows dòng
     for i := 0; i < maxRows; i++ {
         b.WriteString("\r\x1b[2K")
         if i < curRows {
@@ -928,36 +1026,17 @@ func (r *progressRenderer) render(lines []string) string {
             b.WriteByte('\n')
         }
     }
-
-    // đưa con trỏ về đầu khối
     if maxRows > 1 {
         b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
     } else {
         b.WriteString("\r")
     }
 
-   // BẬT lại auto-wrap
-    b.WriteString("\x1b[?7h")
-
+    b.WriteString("\x1b[?7h") // on wrap
     r.prevRows = curRows
     return b.String()
 }
 
-func (r *progressRenderer) keep() string {
-    if r.prevRows == 0 {
-        return ""
-    }
-    var b strings.Builder
-    b.WriteString("\x1b[?7l") // off wrap
-    b.WriteString("\r")
-    if r.prevRows > 1 {
-        b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1))
-    }
-    b.WriteString("\x1b[E")
-    b.WriteString("\x1b[?7h") // on wrap
-    r.prevRows = 0
-    return b.String()
-}
 
 
 
