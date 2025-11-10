@@ -1286,6 +1286,7 @@ type CopyCommand struct {
     s3Err    error
 
 	failLog *FailCollector
+	panelDone chan struct{}
 }
 
 var copyCommand = CopyCommand{
