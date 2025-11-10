@@ -1716,13 +1716,13 @@ func (cc *CopyCommand) checkCopyOptions(opType operationType) error {
 var progressMu sync.Mutex
 
 func (cc *CopyCommand) progressBar() {
-    ticker := time.NewTicker(1 * time.Second)
-    defer ticker.Stop()
 	defer func() { // báo cho RunCommand biết là panel đã thoát
         if cc.panelDone != nil {
             close(cc.panelDone)
         }
     }()
+	ticker := time.NewTicker(1 * time.Second)
+    defer ticker.Stop()
 
     for {
         select {
@@ -2566,16 +2566,24 @@ func (cc *CopyCommand) downloadFiles(srcURL CloudURL, destURL FileURL) error {
 }
 
 func (cc *CopyCommand) formatResultPrompt(err error) error {
-	// đóng panel (normal/err sẽ do chỗ gọi quyết định; ở đây normal)
-	select { case chProgressSignal <- chProgressSignalType{finish: true, exitStat: normalExit}: default: }
-	close(chProgressSignal)
-	<-cc.panelDone
+    if cc.cpOption.opType == operationTypeCopy {
+        // ✨ Đường copy: KHÔNG in panel ở đây nữa
+        if err != nil && cc.cpOption.ctnu {
+            return nil
+        }
+        return err
+    }
 
-	if err != nil && cc.cpOption.ctnu {
-		return nil
-	}
-	return err
+    // Download giữ nguyên hành vi cũ:
+    cc.closeProgress()
+    fmt.Printf(cc.monitor.progressBar(true, normalExit))
+
+    if err != nil && cc.cpOption.ctnu {
+        return nil
+    }
+    return err
 }
+
 
 func (cc *CopyCommand) adjustSrcURLForCommand(srcURL *CloudURL, bSyncCommand bool) {
 	if !bSyncCommand {
@@ -3099,12 +3107,21 @@ func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
 		}
 
 		go cc.objectStatistic(bucket, srcURL)
-		wid := 0 // dùng 0 cho single
-		cc.monitor.SetCurrent(wid, "<src> -> <dest>")
-		// ... gọi hàm thực thi ...
-		cc.monitor.ClearCurrent(wid)
-		err := cc.copySingleFileWithReport(bucket, objectInfoType{prefix, relativeKey, -1, time.Now()}, srcURL, destURL)
-		return cc.formatResultPrompt(err)
+		err := cc.copySingleFileWithReport(bucket, objectInfoType{...}, srcURL, destURL)
+
+		// ✨ báo kết thúc panel & đợi dừng hoàn toàn
+		select {
+		case chProgressSignal <- chProgressSignalType{finish: true, exitStat: normalExit}:
+		default:
+		}
+		close(chProgressSignal)
+		if cc.panelDone != nil { <-cc.panelDone }
+
+		// Giữ nguyên “quy tắc ctnu”: trả err nếu không ctnu
+		if err != nil && cc.cpOption.ctnu {
+			return nil
+		}
+		return err
 	}
 
 	if destURL.object != "" && !strings.HasSuffix(destURL.object, "/") {
