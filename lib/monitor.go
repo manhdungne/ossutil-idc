@@ -1068,4 +1068,11 @@ func (m *CPMonitor) MaybePrintL4Line(level int) string {
     return getClearStr("[Current@L4] " + l + "\n")
 }
 
-
+func panelLogln(a ...any) {
+    fmt.Fprint(os.Stderr, cpRenderer.keep())
+    fmt.Fprintln(os.Stderr, a...)
+}
+func panelLogf(format string, a ...any) {
+    fmt.Fprint(os.Stderr, cpRenderer.keep())
+    fmt.Fprintf(os.Stderr, format, a...)
+}

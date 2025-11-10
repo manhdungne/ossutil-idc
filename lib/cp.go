@@ -1709,47 +1709,35 @@ func (cc *CopyCommand) progressBar() {
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok {
-                return
-            }
+            if !ok { return }
 
-            // 1) Nếu L4 đổi, đóng panel hiện tại rồi in mốc L4 (một dòng rời)
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                fmt.Fprint(os.Stderr, cpRenderer.keep())          // kết sổ panel, đưa con trỏ xuống
-                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)   // in mốc L4
+                panelLogf("[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
-
-            // 2) Vẽ/overwrite panel nhiều dòng (rate-limit + chỉ vẽ khi nội dung đổi)
             if s := cc.monitor.RenderPanelTick(false); s != "" {
                 fmt.Fprint(os.Stderr, s)
             }
 
-            // 3) Kết thúc: ép vẽ lần cuối, đóng panel và in tổng kết
             if sig.finish {
                 if s := cc.monitor.RenderPanelTick(true); s != "" {
                     fmt.Fprint(os.Stderr, s)
                 }
-                fmt.Fprint(os.Stderr, cpRenderer.keep()) // đóng panel, không xoá nội dung
-
+                // đóng panel, rồi in tổng kết
+                fmt.Fprint(os.Stderr, cpRenderer.keep())
                 sum := cc.monitor.getFinishBar(sig.exitStat)
                 if sum != "" {
-                    // phòng trường hợp sum có prefix '\r'
-                    if strings.HasPrefix(sum, "\r") {
-                        sum = strings.TrimPrefix(sum, "\r")
-                    }
+                    if strings.HasPrefix(sum, "\r") { sum = strings.TrimPrefix(sum, "\r") }
                     fmt.Fprint(os.Stderr, sum)
                 }
                 return
             }
 
         case <-ticker.C:
-            // Tick định kỳ để refresh khi không có tín hiệu
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                fmt.Fprint(os.Stderr, cpRenderer.keep())
-                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
+                panelLogf("[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
             if s := cc.monitor.RenderPanelTick(false); s != "" {
@@ -1758,9 +1746,6 @@ func (cc *CopyCommand) progressBar() {
         }
     }
 }
-
-
-
 
 func (cc *CopyCommand) closeProgress() {
 	signalNum = -1
@@ -2319,16 +2304,22 @@ func (cc *CopyCommand) formatSnapshotKey(absPath, bucket, object string) string 
 }
 
 func (cc *CopyCommand) confirm(str string) bool {
-	mu.Lock()
-	defer mu.Unlock()
+    mu.Lock()
+    defer mu.Unlock()
 
-	var val string
-	fmt.Printf(getClearStr(fmt.Sprintf("cp: overwrite \"%s\"(y or N)? ", str)))
-	if _, err := fmt.Scanln(&val); err != nil || (strings.ToLower(val) != "yes" && strings.ToLower(val) != "y") {
-		return false
-	}
-	return true
+    // ĐÓNG panel trước khi hỏi người dùng
+    fmt.Fprint(os.Stderr, cpRenderer.keep())
+
+    var val string
+    // Hỏi ra stdout (hoặc stderr đều được, nhưng đã keep panel)
+    fmt.Printf("cp: overwrite %q (y or N)? ", str)
+    if _, err := fmt.Scanln(&val); err != nil {
+        return false
+    }
+    val = strings.ToLower(strings.TrimSpace(val))
+    return val == "y" || val == "yes"
 }
+
 
 func (cc *CopyCommand) ossPutObjectRetry(bucket *oss.Bucket, objectName string, content string) error {
 	retryTimes, _ := GetInt(OptionRetryTimes, cc.command.options)
