@@ -907,7 +907,7 @@ func (r *progressRenderer) render(lines []string) string {
     }
 
     var b strings.Builder
-+   // TẮT auto-wrap để terminal không tự xuống dòng khi chạm mép
+    // TẮT auto-wrap để terminal không tự xuống dòng khi chạm mép
     b.WriteString("\x1b[?7l")
 
     // quay về đầu khối cũ
