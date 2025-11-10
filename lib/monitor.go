@@ -771,10 +771,6 @@ func byteIndexAfterRunes(s string, n int) int {
 	return len(s)
 }
 
-type progressRenderer struct {
-	prevRows int
-}
-
 func panelLogf(format string, a ...interface{}) {
     io.WriteString(os.Stderr, cpRenderer.keep())
     fmt.Fprintf(os.Stderr, format, a...)
