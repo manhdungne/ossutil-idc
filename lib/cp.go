@@ -1707,27 +1707,22 @@ func (cc *CopyCommand) progressBar() {
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok {
-                return
-            }
+            if !ok { return }
 
-            // In mốc L4 mỗi khi đổi (giữ nguyên như cũ)
-            l4 := cc.monitor.currentLevelN(5)
-            if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                fmt.Fprintln(os.Stderr) // tách panel ra
-                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
+            // In mốc L4 nếu đổi — dùng panelLogf để không bị panel chồm lên xoá
+            if l4 := cc.monitor.currentLevelN(5); l4 != "" && l4 != cc.monitor.lastL4Printed {
+                panelLogf("[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
 
-            // Panel nhiều dòng → in đầy đủ, không “...”
+            // Vẽ lại panel (nhiều dòng, đầy đủ thông tin, không “...”)
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
 
             if sig.finish {
-                // đóng panel để trả prompt rồi in tổng kết
-                fmt.Fprint(os.Stderr, cpRenderer.keep())
-
+                // Hạ panel rồi in tổng kết
+                io.WriteString(os.Stderr, cpRenderer.keep())
                 sum := cc.monitor.getWholeFinishBar()
-                if strings.HasPrefix(sum, "\r") {
+                if strings.HasPrefix(sum, "\r") { // phòng getClearStr
                     sum = strings.TrimPrefix(sum, "\r")
                 }
                 fmt.Fprint(os.Stderr, sum)
@@ -1735,17 +1730,15 @@ func (cc *CopyCommand) progressBar() {
             }
 
         case <-ticker.C:
-            // Tick định kỳ → vẫn mốc L4 + panel
-            l4 := cc.monitor.currentLevelN(5)
-            if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                fmt.Fprintln(os.Stderr)
-                fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
+            if l4 := cc.monitor.currentLevelN(5); l4 != "" && l4 != cc.monitor.lastL4Printed {
+                panelLogf("[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
             io.WriteString(os.Stderr, cc.monitor.getProgressBar())
         }
     }
 }
+
 
 
 
