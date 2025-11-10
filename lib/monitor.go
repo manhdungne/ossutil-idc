@@ -720,82 +720,6 @@ func (m *CPMonitor) getPrecent(snap *CPMonitorSnap) float64 {
 	return 0
 }
 
-// Giới hạn tối đa ký tự in ra để tránh terminal tự wrap.
-// Bạn có thể chỉnh con số này nếu terminal rộng hơn.
-const progressMaxCols = 200
-
-func getTermWidth() int {
-    w, _, err := term.GetSize(int(os.Stderr.Fd()))
-    if err != nil || w <= 0 {
-        return 120
-    }
-    return w - 2 // chừa 2 ký tự tránh wrap mép phải
-}
-
-func truncate(s string) string {
-    max := getTermWidth()
-    if len(s) <= max {
-        return s
-    }
-    if max > 3 {
-        return s[:max-3] + "..."
-    }
-    return s[:max]
-}
-
-// Ghép base + Current sao cho vừa chiều rộng terminal.
-// Base luôn được giữ nguyên; chỉ cắt bớt danh sách Current nếu thiếu chỗ.
-func (m *CPMonitor) composeProgressLine(base string, currents []string) string {
-    max := getTermWidth()
-    if max <= 0 {
-        max = 120
-    }
-
-    // Nếu base đã dài hơn width thì cắt base và trả về luôn
-    if len(base) >= max {
-        return truncate(base)
-    }
-
-    // Phần trống còn lại để nhét "  Current: ..."
-    room := max - len(base) - 1 // chừa 1 ký tự an toàn
-    if room < 12 || len(currents) == 0 {
-        return base
-    }
-
-    b := strings.Builder{}
-    b.WriteString(base)
-    const prefix = "  Current: "
-    if len(prefix) > room {
-        return base
-    }
-    b.WriteString(prefix)
-    room -= len(prefix)
-
-    // Nhét từng mục Current, cắt gọn nếu cần
-    for i, c := range currents {
-        if len(c) > room {
-            if room <= 3 {
-                break
-            }
-            c = c[:room-3] + "..."
-        }
-        b.WriteString(c)
-        room -= len(c)
-
-        if i < len(currents)-1 {
-            sep := " | "
-            if len(sep) > room {
-                break
-            }
-            b.WriteString(sep)
-            room -= len(sep)
-        }
-        if room <= 0 {
-            break
-        }
-    }
-    return b.String()
-}
 
 // đếm “độ rộng hiển thị” (giản lược: đếm rune; đủ tốt nếu không dùng ANSI màu)
 func displayWidth(s string) int {
@@ -973,44 +897,50 @@ func wrapToWidthSoftRune(s string, width int) []string {
 
 
 func (r *progressRenderer) render(lines []string) string {
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	curRows := len(lines)
-	maxRows := r.prevRows
-	if curRows > maxRows {
-		maxRows = curRows
-	}
+    if len(lines) == 0 {
+        lines = []string{""}
+    }
+    curRows := len(lines)
+    maxRows := r.prevRows
+    if curRows > maxRows {
+        maxRows = curRows
+    }
 
-	var b strings.Builder
-	// quay về đầu khối cũ
-	if r.prevRows > 0 {
-		b.WriteString("\r")
-		if r.prevRows > 1 {
-			b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
-		}
-	}
+    var b strings.Builder
++   // TẮT auto-wrap để terminal không tự xuống dòng khi chạm mép
++   b.WriteString("\x1b[?7l")
 
-	// vẽ đủ maxRows dòng
-	for i := 0; i < maxRows; i++ {
-		b.WriteString("\r\x1b[2K")
-		if i < curRows {
-			b.WriteString(lines[i])
-		}
-		if i < maxRows-1 {
-			b.WriteByte('\n')
-		}
-	}
+    // quay về đầu khối cũ
+    if r.prevRows > 0 {
+        b.WriteString("\r")
+        if r.prevRows > 1 {
+            b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
+        }
+    }
 
-	// đưa con trỏ về đầu khối
-	if maxRows > 1 {
-		b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
-	} else {
-		b.WriteString("\r")
-	}
+    // vẽ đủ maxRows dòng
+    for i := 0; i < maxRows; i++ {
+        b.WriteString("\r\x1b[2K")
+        if i < curRows {
+            b.WriteString(lines[i])
+        }
+        if i < maxRows-1 {
+            b.WriteByte('\n')
+        }
+    }
 
-	r.prevRows = curRows
-	return b.String()
+    // đưa con trỏ về đầu khối
+    if maxRows > 1 {
+        b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
+    } else {
+        b.WriteString("\r")
+    }
+
++   // BẬT lại auto-wrap
++   b.WriteString("\x1b[?7h")
+
+    r.prevRows = curRows
+    return b.String()
 }
 
 func (r *progressRenderer) keep() string {
@@ -1018,57 +948,18 @@ func (r *progressRenderer) keep() string {
         return ""
     }
     var b strings.Builder
-    // Về đầu dòng của khối
++   b.WriteString("\x1b[?7l") // off wrap
     b.WriteString("\r")
-    // Di chuyển con trỏ xuống cuối khối (prevRows-1 dòng)
     if r.prevRows > 1 {
-        b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1)) // CSI n B = cursor down n lines
+        b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1))
     }
-    // Nhảy sang đầu dòng kế tiếp của panel để nhường chỗ log (không in \n thật)
-    b.WriteString("\x1b[E") // move to next line, col 1 (có thể scroll 1 nếu ở cuối màn hình)
+    b.WriteString("\x1b[E")
++   b.WriteString("\x1b[?7h") // on wrap
     r.prevRows = 0
     return b.String()
 }
 
 
-// 1 dòng tiến độ đủ thông tin, KHÔNG có '\n', dùng getClearStr để overwrite
-func (m *CPMonitor) BuildProgressLineOneLine() string {
-    snap := m.getSnapshot()
-
-    // cập nhật tốc độ
-    now := time.Now()
-    snap.incrementSize = m.transferSize - m.lastSnapSize
-    m.lastSnapSize = snap.transferSize
-    m.lastSnapTime = now
-
-    scanNum  := max(m.totalNum, snap.dealNum)
-    scanSize := max(m.totalSize, snap.dealSize)
-    copyCnt  := snap.fileNum + snap.dirNum
-    skipCnt  := snap.skipNum + snap.skipNumDir
-    errCnt   := snap.errNum
-    okSize   := getSizeString(snap.dealSize)
-    speed    := fmt.Sprintf("%.2fKB/s", m.getSpeed(snap))
-
-    pctStr := ""
-    if m.seekAheadEnd && m.seekAheadError == nil {
-        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
-    }
-
-    base := fmt.Sprintf(
-        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %s%s",
-        scanNum, getSizeString(scanSize),
-        snap.dealNum, copyCnt, skipCnt, errCnt,
-        okSize, speed, pctStr,
-    )
-
-    // gói cho vừa terminal (tuỳ bạn đã có getTermWidth/truncate)
-    w := getTermWidth()
-    if len(base) > w && w > 6 {
-        base = base[:w-3] + "..."
-    }
-    // getClearStr trả về "\r...." giúp overwrite trên 1 dòng
-    return getClearStr(base)
-}
 
 
 func (m *CPMonitor) currentLevelN(n int) string {
