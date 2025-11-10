@@ -22,6 +22,7 @@ import (
 	"net"
 	"sync/atomic"
 	"bufio"
+	"golang.org/x/term"
 
 	oss "github.com/aliyun/aliyun-oss-go-sdk/oss"
 	leveldb "github.com/syndtr/goleveldb/leveldb"
