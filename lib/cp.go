@@ -1707,49 +1707,43 @@ func (cc *CopyCommand) progressBar() {
     for {
         select {
         case sig, ok := <-chProgressSignal:
-            if !ok {
-                return
-            }
+            if !ok { return }
 
-            // 1) nếu prefix cấp-4 đổi -> in 1 dòng mốc
+            // L4 mốc
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
-                // kết thúc dòng hiện tại (xuống dòng), rồi in mốc
-                fmt.Fprintln(os.Stderr)
+                fmt.Fprintln(os.Stderr) // tách panel
                 fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
 
-            // 2) in/cập nhật 1 dòng tiến độ
-            io.WriteString(os.Stderr, cc.monitor.BuildProgressPanel())
+            // ⬇️ sử dụng panel nhiều dòng (không cắt), tự wrap theo width
+            io.WriteString(os.Stderr, cc.monitor.getProgressBar())
 
             if sig.finish {
-                // kết thúc: xuống dòng để trả shell
-                fmt.Fprintln(os.Stderr)
-                // tổng kết dạng log thường (nếu muốn)
+                // đóng panel để trả prompt rồi in tổng kết
+                fmt.Fprint(os.Stderr, cpRenderer.keep())
                 sum := cc.monitor.getWholeFinishBar()
-                if sum != "" {
-                    // ensure không dùng getClearStr ở tổng kết
-                    if strings.HasPrefix(sum, "\r") {
-                        sum = strings.TrimPrefix(sum, "\r")
-                    }
-                    fmt.Fprint(os.Stderr, sum)
+                if strings.HasPrefix(sum, "\r") {
+                    sum = strings.TrimPrefix(sum, "\r")
                 }
+                fmt.Fprint(os.Stderr, sum)
                 return
             }
 
         case <-ticker.C:
-            // tick định kỳ để refresh nếu không có tín hiệu
             l4 := cc.monitor.currentLevelN(5)
             if l4 != "" && l4 != cc.monitor.lastL4Printed {
                 fmt.Fprintln(os.Stderr)
                 fmt.Fprintf(os.Stderr, "[Current@L4] %s\n", l4)
                 cc.monitor.lastL4Printed = l4
             }
-            io.WriteString(os.Stderr, cc.monitor.BuildProgressLineOneLine())
+            // ⬇️ dùng panel nhiều dòng
+            io.WriteString(os.Stderr, cc.monitor.getProgressBar())
         }
     }
 }
+
 
 
 func (cc *CopyCommand) closeProgress() {
