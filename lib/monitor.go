@@ -1068,11 +1068,13 @@ func (m *CPMonitor) MaybePrintL4Line(level int) string {
     return getClearStr("[Current@L4] " + l + "\n")
 }
 
-func panelLogln(a ...any) {
+// AFTER (tương thích Go 1.13)
+func panelLogln(a ...interface{}) {
     fmt.Fprint(os.Stderr, cpRenderer.keep())
     fmt.Fprintln(os.Stderr, a...)
 }
-func panelLogf(format string, a ...any) {
+func panelLogf(format string, a ...interface{}) {
     fmt.Fprint(os.Stderr, cpRenderer.keep())
     fmt.Fprintf(os.Stderr, format, a...)
 }
+
