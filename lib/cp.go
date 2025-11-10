@@ -1356,7 +1356,6 @@ var copyCommand = CopyCommand{
 			OptionStartTime,
 			OptionEndTime,
 		},
-		panelDone chan struct{},
 	},
 }
 
