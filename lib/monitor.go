@@ -908,6 +908,68 @@ func wrapToWidthMaxLines(s string, width, maxLines int) []string {
     return lines
 }
 
+// Soft-wrap theo "độ rộng rune", ưu tiên cắt ở khoảng trắng.
+// - Không rách UTF-8 (làm việc trên []rune)
+// - Không thêm "..." — chỉ xuống dòng
+// - Không ANSI-aware (nếu bạn có mã màu ANSI, xem bản ANSI-aware bên dưới)
+func wrapToWidthSoftRune(s string, width int) []string {
+	if width <= 1 || len(s) == 0 {
+		return []string{s}
+	}
+
+	runes := []rune(s)
+	n := len(runes)
+	out := make([]string, 0, 4)
+
+	lineStart := 0     // vị trí rune bắt đầu của dòng hiện tại
+	col := 0           // số rune đã in trong dòng hiện tại
+	lastSpace := -1    // vị trí rune khoảng trắng gần nhất trong dòng hiện tại
+
+	for i := 0; i < n; i++ {
+		r := runes[i]
+
+		// ghi nhớ vị trí khoảng trắng để cắt mềm
+		if r == ' ' || r == '\t' {
+			lastSpace = i
+		}
+
+		col++
+
+		// nếu vượt width → cắt dòng
+		if col > width {
+			cut := i // mặc định cắt ngay trước rune hiện tại
+			if lastSpace >= lineStart {
+				// cắt tại khoảng trắng gần nhất trong dòng
+				cut = lastSpace + 1
+			}
+			out = append(out, string(runes[lineStart:cut]))
+
+			// bắt đầu dòng mới
+			lineStart = cut
+			col = 0
+			lastSpace = -1
+
+			// bỏ leading spaces ở đầu dòng mới
+			for lineStart < n && (runes[lineStart] == ' ' || runes[lineStart] == '\t') {
+				lineStart++
+			}
+
+			// i lùi về trước rune tiếp theo (for sẽ ++)
+			i = lineStart - 1
+		}
+	}
+
+	// phần còn lại
+	if lineStart < n {
+		out = append(out, string(runes[lineStart:]))
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
+}
+
+
 
 
 func (r *progressRenderer) render(lines []string) string {
