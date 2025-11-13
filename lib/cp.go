@@ -3362,7 +3362,11 @@ func (cc *CopyCommand) bridgeCopyOSS2S3_Stream(
 			in.ContentLanguage = putHdr.ContentLanguage
 		}
 
-		_, e = cli.PutObject(ctx, in)
+		_, e = cli.PutObject(ctx, in,
+            s3.WithAPIOptions(
+                v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware,
+            ),
+        )
 		return e
 	})
 }
