@@ -3716,9 +3716,9 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
         baseBackoff = 2 * time.Second
         maxBackoff  = 15 * time.Second
         // ngưỡng băng thông tối thiểu mong đợi để tính timeout (≈1.5 MiB/s)
-        minThroughput = 1_500_000 // bytes/second
-        minTimeout    = 30 * time.Second
-        maxTimeout    = 2 * time.Minute
+        minThroughput = 256_000 // bytes/second
+        minTimeout    = 3 * time.Minute
+        maxTimeout    = 45 * time.Minute
     )
 
     size := end - start + 1
