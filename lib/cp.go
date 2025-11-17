@@ -3712,13 +3712,13 @@ func (cc *CopyCommand) uploadSinglePartWithRetry(
     start, end int64,
 ) (s3types.CompletedPart, error) {
     const (
-        maxTry      = 3
+        maxTry      = 2
         baseBackoff = 2 * time.Second
         maxBackoff  = 15 * time.Second
         // ngưỡng băng thông tối thiểu mong đợi để tính timeout (≈1.5 MiB/s)
         minThroughput = 1_500_000 // bytes/second
-        minTimeout    = 60 * time.Second
-        maxTimeout    = 10 * time.Minute
+        minTimeout    = 30 * time.Second
+        maxTimeout    = 2 * time.Minute
     )
 
     size := end - start + 1
