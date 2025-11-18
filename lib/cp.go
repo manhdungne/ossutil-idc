@@ -4208,7 +4208,7 @@ func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
 func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
     if ex, covered := cc.s3ExistsCachedNoNet(bucket, key); covered {
         return ex, nil // KHÔNG gọi mạng
-    // }
+    }
     // // chỉ fallback nếu prefix chưa prefetch (object nằm ngoài vùng đã index)
     // cli, err := cc.getS3Client()
     // if err != nil { return false, err }
