@@ -4143,32 +4143,32 @@ var (
 )
 
 func (cc *CopyCommand) prefetchS3DestIndex(dest CloudURL) error {
-    cli, err := cc.getS3Client()
-    if err != nil { return err }
+    // cli, err := cc.getS3Client()
+    // if err != nil { return err }
 
-    local := make(map[string]struct{}, 4096)
-    in := &s3.ListObjectsV2Input{
-        Bucket:  aws.String(dest.bucket),
-        Prefix:  aws.String(dest.object),
-        MaxKeys: aws.Int32(1000),
-        // ĐỪNG đặt Delimiter trừ khi bạn thật sự chỉ muốn “folder”; cần keys thực tế.
-    }
-    for {
-        out, err := cli.ListObjectsV2(context.Background(), in)
-        if err != nil { return err }
-        for _, obj := range out.Contents {
-            local[aws.ToString(obj.Key)] = struct{}{}
-        }
-        if aws.ToBool(out.IsTruncated) && out.NextContinuationToken != nil {
-            in.ContinuationToken = out.NextContinuationToken
-        } else { break }
-    }
+    // local := make(map[string]struct{}, 4096)
+    // in := &s3.ListObjectsV2Input{
+    //     Bucket:  aws.String(dest.bucket),
+    //     Prefix:  aws.String(dest.object),
+    //     MaxKeys: aws.Int32(1000),
+    //     // ĐỪNG đặt Delimiter trừ khi bạn thật sự chỉ muốn “folder”; cần keys thực tế.
+    // }
+    // for {
+    //     out, err := cli.ListObjectsV2(context.Background(), in)
+    //     if err != nil { return err }
+    //     for _, obj := range out.Contents {
+    //         local[aws.ToString(obj.Key)] = struct{}{}
+    //     }
+    //     if aws.ToBool(out.IsTruncated) && out.NextContinuationToken != nil {
+    //         in.ContinuationToken = out.NextContinuationToken
+    //     } else { break }
+    // }
 
-    s3IdxMu.Lock()
-    if s3Index[dest.bucket] == nil { s3Index[dest.bucket] = map[string]struct{}{} }
-    for k := range local { s3Index[dest.bucket][k] = struct{}{} }
-    s3Done[dest.bucket] = append(s3Done[dest.bucket], dest.object)
-    s3IdxMu.Unlock()
+    // s3IdxMu.Lock()
+    // if s3Index[dest.bucket] == nil { s3Index[dest.bucket] = map[string]struct{}{} }
+    // for k := range local { s3Index[dest.bucket][k] = struct{}{} }
+    // s3Done[dest.bucket] = append(s3Done[dest.bucket], dest.object)
+    // s3IdxMu.Unlock()
     return nil
 }
 
@@ -4206,21 +4206,21 @@ func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
 
 // Trả về: exists, err
 func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
-    if ex, covered := cc.s3ExistsCachedNoNet(bucket, key); covered {
-        return ex, nil // KHÔNG gọi mạng
-    }
-    // chỉ fallback nếu prefix chưa prefetch (object nằm ngoài vùng đã index)
-    cli, err := cc.getS3Client()
-    if err != nil { return false, err }
-    out, err := cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-        Bucket:  aws.String(bucket),
-        Prefix:  aws.String(key),
-        MaxKeys: aws.Int32(1),
-    })
-    if err != nil { return false, err }
-    if len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key {
-        return true, nil
-    }
+    // if ex, covered := cc.s3ExistsCachedNoNet(bucket, key); covered {
+    //     return ex, nil // KHÔNG gọi mạng
+    // }
+    // // chỉ fallback nếu prefix chưa prefetch (object nằm ngoài vùng đã index)
+    // cli, err := cc.getS3Client()
+    // if err != nil { return false, err }
+    // out, err := cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+    //     Bucket:  aws.String(bucket),
+    //     Prefix:  aws.String(key),
+    //     MaxKeys: aws.Int32(1),
+    // })
+    // if err != nil { return false, err }
+    // if len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key {
+    //     return true, nil
+    // }
     return false, nil
 }
 
