@@ -4206,8 +4206,8 @@ func (cc *CopyCommand) getS3Client() (*s3.Client, error) {
 
 // Trả về: exists, err
 func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
-    // if ex, covered := cc.s3ExistsCachedNoNet(bucket, key); covered {
-    //     return ex, nil // KHÔNG gọi mạng
+    if ex, covered := cc.s3ExistsCachedNoNet(bucket, key); covered {
+        return ex, nil // KHÔNG gọi mạng
     // }
     // // chỉ fallback nếu prefix chưa prefetch (object nằm ngoài vùng đã index)
     // cli, err := cc.getS3Client()
@@ -4221,7 +4221,13 @@ func (cc *CopyCommand) s3LookupExistCached(bucket, key string) (bool, error) {
     // if len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key {
     //     return true, nil
     // }
-    return false, nil
+    // return false, nil
+	    // Không dùng ListObjectsV2 nữa, chỉ HEAD object trực tiếp
+    exists, _, err := cc.s3HeadObject(bucket, key)
+    if err != nil {
+        return false, err
+    }
+    return exists, nil
 }
 
 var debugOn = os.Getenv("OSSUTIL_DEBUG") == "1"
