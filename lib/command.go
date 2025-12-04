@@ -604,27 +604,10 @@ func (cmd *Command) ossBucket(bucketName string) (*oss.Bucket, error) {
 
 func (cmd *Command) ossListObjectsRetry(bucket *oss.Bucket, options ...oss.Option) (oss.ListObjectsResult, error) {
 	retryTimes, _ := GetInt(OptionRetryTimes, cmd.options)
-
-	var lor oss.ListObjectsResult
-	var err error
-
 	for i := 1; ; i++ {
-		lor, err = bucket.ListObjects(options...)
+		lor, err := bucket.ListObjects(options...)
 		if err == nil {
-			return lor, nil
-		}
-
-		// 🔥 Trường hợp đặc biệt: XML bị bẩn (illegal character code U+0008, ...)
-		// → log cảnh báo, SKIP toàn bộ prefix đang list, coi như không có object nào.
-		if strings.Contains(err.Error(), "illegal character code") {
-			LogError("[WARN] Skip OSS ListObjects on bucket=%s due to XML illegal char: %v",
-				bucket.BucketName, err)
-
-			return oss.ListObjectsResult{
-				Objects:     []oss.ObjectProperties{},
-				IsTruncated: false,
-				NextMarker:  "",
-			}, nil
+			return lor, err
 		}
 
 		// http 4XX error no need to retry
@@ -635,10 +618,9 @@ func (cmd *Command) ossListObjectsRetry(bucket *oss.Bucket, options ...oss.Optio
 		}
 
 		// wait 1 second
-		time.Sleep(1 * time.Second)
+		time.Sleep(time.Duration(1) * time.Second)
 	}
 }
-
 
 func (cmd *Command) ossListObjectVersionsRetry(bucket *oss.Bucket, options ...oss.Option) (oss.ListObjectVersionsResult, error) {
 	retryTimes, _ := GetInt(OptionRetryTimes, cmd.options)
