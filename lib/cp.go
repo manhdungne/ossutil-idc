@@ -3071,49 +3071,46 @@ func (cc *CopyCommand) waitRoutinueComplete(chError, chListError <-chan error, o
 }
 
 
-// function for copy objects
 func (cc *CopyCommand) copyFiles(srcURL, destURL CloudURL) error {
-	bucket, err := cc.command.ossBucket(srcURL.bucket)
-	if err != nil {
-		return err
-	}
+    bucket, err := cc.command.ossBucket(srcURL.bucket)
+    if err != nil {
+        return err
+    }
 
-	if err := cc.checkCopyFileArgs(srcURL, destURL); err != nil {
-		return err
-	}
+    if err := cc.checkCopyFileArgs(srcURL, destURL); err != nil {
+        return err
+    }
 
-	if !cc.cpOption.recursive {
-		if srcURL.object == "" {
-			return fmt.Errorf("copy object invalid url: %s, object empty. If you mean batch copy objects, please use --recursive option", srcURL.ToString())
-		}
+    if !cc.cpOption.recursive {
+        if srcURL.object == "" {
+            return fmt.Errorf("copy object invalid url: %s, object empty. If you mean batch copy objects, please use --recursive option", srcURL.ToString())
+        }
 
-		// it is a "Dir" object
-		if strings.HasSuffix(srcURL.object, "/") {
-			return fmt.Errorf("cp: %v is a directory (not copied), please use --recursive option", srcURL.object)
-		}
+        if strings.HasSuffix(srcURL.object, "/") {
+            return fmt.Errorf("cp: %v is a directory (not copied), please use --recursive option", srcURL.object)
+        }
 
-		index := strings.LastIndex(srcURL.object, "/")
-		prefix := ""
-		relativeKey := srcURL.object
-		if index > 0 {
-			prefix = srcURL.object[:index+1]
-			relativeKey = srcURL.object[index+1:]
-		}
+        index := strings.LastIndex(srcURL.object, "/")
+        prefix := ""
+        relativeKey := srcURL.object
+        if index > 0 {
+            prefix = srcURL.object[:index+1]
+            relativeKey = srcURL.object[index+1:]
+        }
 
-		go cc.objectStatistic(bucket, srcURL)
-		wid := 0 // dùng 0 cho single
-		cc.monitor.SetCurrent(wid, "<src> -> <dest>")
-		// ... gọi hàm thực thi ...
-		cc.monitor.ClearCurrent(wid)
-		err := cc.copySingleFileWithReport(bucket, objectInfoType{prefix, relativeKey, -1, time.Now()}, srcURL, destURL)
-		return cc.formatResultPrompt(err)
-	}
+        // --- Fit Monitor gốc ---
+        err := cc.copySingleFileWithReport(bucket, objectInfoType{prefix, relativeKey, -1, time.Now()}, srcURL, destURL)
+        cc.monitor.updateTransferSize(0) // hoặc updateFile nếu cần
+        fmt.Print(cc.monitor.progressBar(true, normalExit)) // in bar cuối
+        return cc.formatResultPrompt(err)
+    }
 
-	if destURL.object != "" && !strings.HasSuffix(destURL.object, "/") {
-		destURL.object = destURL.object + "/"
-	}
-	return cc.batchCopyFiles(bucket, srcURL, destURL)
+    if destURL.object != "" && !strings.HasSuffix(destURL.object, "/") {
+        destURL.object = destURL.object + "/"
+    }
+    return cc.batchCopyFiles(bucket, srcURL, destURL)
 }
+
 
 func (cc *CopyCommand) checkCopyFileArgs(srcURL, destURL CloudURL) error {
     // 1) Đích phải hợp lệ

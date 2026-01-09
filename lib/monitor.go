@@ -3,13 +3,8 @@ package lib
 import (
 	"fmt"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
-	"os"
-    "golang.org/x/term"
-	"unicode/utf8"
-	"io"
 )
 
 const (
@@ -22,9 +17,15 @@ var processTickInterval int64 = 5
 var clearStrLen int = 0
 var clearStr string = strings.Repeat(" ", clearStrLen)
 
-func getClearStr(s string) string {
-    return "\r\x1b[2K" + s // carriage return + clear entire line, no newline
+func getClearStr(str string) string {
+	if clearStrLen <= len(str) {
+		clearStrLen = len(str)
+		return fmt.Sprintf("\r%s", str)
+	}
+	clearStr = strings.Repeat(" ", clearStrLen)
+	return fmt.Sprintf("\r%s\r%s", clearStr, str)
 }
+
 type Monitorer interface {
 	setScanError(err error)
 	updateScanNum(num int64)
@@ -53,7 +54,6 @@ type Monitor struct {
 	seekAheadError error
 	seekAheadEnd   bool
 	finish         bool
-	lastSnapTime   time.Time
 	_              uint32 //Add padding to make sure the next data 64bits alignment
 }
 
@@ -98,7 +98,6 @@ func (m *Monitor) getSnapshot() *MonitorSnap {
 	return &snap
 }
 
-
 func (m *Monitor) progressBar(finish bool, exitStat int) string {
 	if m.finish {
 		return ""
@@ -124,7 +123,6 @@ func (m *Monitor) getProgressBar() string {
 	}
 	return getClearStr(fmt.Sprintf("Scanned %d objects. %s %d objects, Error %d objects.", scanNum, m.opStr, snap.okNum, snap.errNum))
 }
-
 
 func (m *Monitor) getPrecent(snap *MonitorSnap) int {
 	if m.seekAheadEnd && m.seekAheadError == nil {
@@ -419,10 +417,6 @@ type CPMonitor struct {
 	finish         bool
 	_              uint32 //Add padding to make sure the next data 64bits alignment
 	lastSnapTime   time.Time
-	mu           sync.RWMutex
-    currentByWID map[int]string
-	lastPanelAt time.Time
-	lastL4Printed string
 }
 
 func (m *CPMonitor) init(op operationType) {
@@ -442,9 +436,6 @@ func (m *CPMonitor) init(op operationType) {
 	m.lastSnapSize = 0
 	m.lastSnapTime = time.Now()
 	m.tickDuration = processTickInterval * int64(time.Second)
-	m.currentByWID = make(map[int]string)
-	m.tickDuration = 1 * int64(time.Second) // 1s/khung cho đỡ nhấp nháy
-	m.lastPanelAt = time.Now()
 }
 
 func (m *CPMonitor) setScanError(err error) {
@@ -517,29 +508,6 @@ func (m *CPMonitor) getSnapshot() *CPMonitorSnap {
 	return &snap
 }
 
-func (m *CPMonitor) SetCurrent(wid int, name string) {
-    m.mu.Lock()
-    m.currentByWID[wid] = name
-    m.mu.Unlock()
-}
-func (m *CPMonitor) ClearCurrent(wid int) {
-    m.mu.Lock()
-    delete(m.currentByWID, wid)
-    m.mu.Unlock()
-}
-func (m *CPMonitor) snapshotCurrents(max int) []string {
-    m.mu.RLock()
-    defer m.mu.RUnlock()
-    res := make([]string, 0, len(m.currentByWID))
-    for _, v := range m.currentByWID {
-        if len(v) > 120 { v = v[:117] + "..." }
-        res = append(res, v)
-        if max > 0 && len(res) >= max { break }
-    }
-    return res
-}
-
-
 func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
 	if m.finish {
 		return ""
@@ -551,46 +519,26 @@ func (m *CPMonitor) progressBar(finish bool, exitStat int) string {
 	return m.getFinishBar(exitStat)
 }
 
-var cpRenderer progressRenderer
-
 func (m *CPMonitor) getProgressBar() string {
-    snap := m.getSnapshot()
+	mu.RLock()
+	defer mu.RUnlock()
 
-    if snap.duration < m.tickDuration {
-        return ""
-    }
-    m.lastSnapTime = time.Now()
-    snap.incrementSize = m.transferSize - m.lastSnapSize
-    m.lastSnapSize = snap.transferSize
+	snap := m.getSnapshot()
+	if snap.duration < m.tickDuration {
+		return ""
+	} else {
+		m.lastSnapTime = time.Now()
+		snap.incrementSize = m.transferSize - m.lastSnapSize
+		m.lastSnapSize = snap.transferSize
+	}
 
-    scanNum   := max(m.totalNum, snap.dealNum)
-    scanSize  := max(m.totalSize, snap.dealSize)
-    copyCount := snap.fileNum + snap.dirNum
-    skipCount := snap.skipNum + snap.skipNumDir
-    errCount  := snap.errNum
-
-    // KHÔNG in “Current object” nữa
-    // currents := m.snapshotCurrents(2) // <- bỏ
-    // curStr := ""                      // <- bỏ
-
-    pctStr := ""
-    if m.seekAheadEnd && m.seekAheadError == nil {
-        pctStr = fmt.Sprintf(", Progress: %.3f%%", m.getPrecent(snap))
-    }
-
-    line := fmt.Sprintf(
-        "Scanned num: %d, size: %s. Dealed num: %d(copy %d objects, skip %d objects, err %d objects), OK size: %s, Speed: %.2fKB/s%s",
-        scanNum, getSizeString(scanSize),
-        snap.dealNum, copyCount, skipCount, errCount,
-        getSizeString(snap.dealSize),
-        m.getSpeed(snap), pctStr,
-    )
-    // Tự wrap theo width, KHÔNG thêm “...”
-    lines := wrapToWidthMaxLines(line, termWidth(), 3)
-    return cpRenderer.render(lines)
+	if m.seekAheadEnd && m.seekAheadError == nil {
+		return getClearStr(fmt.Sprintf("Total num: %d, size: %s. Dealed num: %d%s%s, Progress: %.3f%s, Speed: %.2fKB/s", m.totalNum, getSizeString(m.totalSize), snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap), m.getPrecent(snap), "%%", m.getSpeed(snap)))
+	}
+	scanNum := max(m.totalNum, snap.dealNum)
+	scanSize := max(m.totalSize, snap.dealSize)
+	return getClearStr(fmt.Sprintf("Scanned num: %d, size: %s. Dealed num: %d%s%s, Speed: %.2fKB/s.", scanNum, getSizeString(scanSize), snap.dealNum, m.getDealNumDetail(snap), m.getDealSizeDetail(snap), m.getSpeed(snap)))
 }
-
-
 
 func (m *CPMonitor) getFinishBar(exitStat int) string {
 	if exitStat == normalExit {
@@ -718,340 +666,4 @@ func (m *CPMonitor) getPrecent(snap *CPMonitorSnap) float64 {
 		return 100
 	}
 	return 0
-}
-
-
-// đếm “độ rộng hiển thị” (giản lược: đếm rune; đủ tốt nếu không dùng ANSI màu)
-func displayWidth(s string) int {
-	return utf8.RuneCountInString(s)
-}
-
-// tìm điểm cắt “mềm” <= width tại khoảng trắng; nếu không có thì cắt đúng width runes
-func softCutIndex(s string, width int) int {
-	if width <= 0 {
-		return 0
-	}
-	// đi qua width rune
-	i := 0
-	for idx := range s {
-		if i == width {
-			break
-		}
-		i++
-		if i == width {
-			// idx là byte index của rune đầu tiên sau khi đủ width? ta cần vị trí sau rune thứ width
-			// range cho idx của rune hiện tại; để lấy sau rune này cần tiếp tục một bước
-			// nhưng đơn giản: giữ idx, rồi sau vòng kế ta có nextIdx
-		}
-		_ = idx
-	}
-	// tính byte index sau rune thứ width
-	byteIdx := byteIndexAfterRunes(s, width)
-
-	// tìm khoảng trắng gần nhất về bên trái
-	left := strings.LastIndexAny(s[:byteIdx], " \t")
-	if left > width/2 { // chỉ cắt ở space nếu đủ gần cuối
-		return left
-	}
-	return byteIdx
-}
-
-// trả byte index sau N rune
-func byteIndexAfterRunes(s string, n int) int {
-	if n <= 0 {
-		return 0
-	}
-	i := 0
-	for idx := range s {
-		if i == n {
-			return idx
-		}
-		i++
-	}
-	return len(s)
-}
-
-func panelLogf(format string, a ...interface{}) {
-    io.WriteString(os.Stderr, cpRenderer.keep())
-    fmt.Fprintf(os.Stderr, format, a...)
-    if !strings.HasSuffix(format, "\n") {
-        fmt.Fprintln(os.Stderr)
-    }
-}
-
-
-
-func termWidth() int {
-	w, _, err := term.GetSize(int(os.Stderr.Fd()))
-	if err != nil || w <= 0 {
-		return 120
-	}
-	return w - 2
-}
-
-// Soft-wrap theo độ rộng ký tự (rune), ưu tiên cắt ở khoảng trắng.
-// Không thêm "..." – chỉ xuống dòng trong khối.
-func wrapToWidth(s string, width int) []string {
-	if width <= 4 {
-		return []string{s} // quá nhỏ, thôi kệ
-	}
-	var out []string
-	runes := []rune(s)
-
-	for len(runes) > width {
-		// tìm khoảng trắng gần nhất bên trái vị trí width
-		cut := width
-		for i := width; i >= 0; i-- {
-			if runes[i] == ' ' || runes[i] == '\t' {
-				cut = i + 1 // cắt sau space
-				break
-			}
-		}
-		out = append(out, string(runes[:cut]))
-		runes = runes[cut:]
-	}
-	out = append(out, string(runes))
-	return out
-}
-
-func wrapToWidthMaxLines(s string, width, maxLines int) []string {
-    lines := wrapToWidthSoftRune(s, width) // soft wrap theo rune/space
-    if maxLines > 0 && len(lines) > maxLines {
-        hidden := len(lines) - (maxLines - 1)
-        head := lines[:maxLines-1]
-        tail := fmt.Sprintf("… (+%d more)", hidden)
-        // cắt tail nếu quá rộng
-        r := []rune(tail)
-        if len(r) > width { tail = string(r[:width]) }
-        return append(head, tail)
-    }
-    return lines
-}
-
-// Soft-wrap theo "độ rộng rune", ưu tiên cắt ở khoảng trắng.
-// - Không rách UTF-8 (làm việc trên []rune)
-// - Không thêm "..." — chỉ xuống dòng
-// - Không ANSI-aware (nếu bạn có mã màu ANSI, xem bản ANSI-aware bên dưới)
-func wrapToWidthSoftRune(s string, width int) []string {
-	if width <= 1 || len(s) == 0 {
-		return []string{s}
-	}
-
-	runes := []rune(s)
-	n := len(runes)
-	out := make([]string, 0, 4)
-
-	lineStart := 0     // vị trí rune bắt đầu của dòng hiện tại
-	col := 0           // số rune đã in trong dòng hiện tại
-	lastSpace := -1    // vị trí rune khoảng trắng gần nhất trong dòng hiện tại
-
-	for i := 0; i < n; i++ {
-		r := runes[i]
-
-		// ghi nhớ vị trí khoảng trắng để cắt mềm
-		if r == ' ' || r == '\t' {
-			lastSpace = i
-		}
-
-		col++
-
-		// nếu vượt width → cắt dòng
-		if col > width {
-			cut := i // mặc định cắt ngay trước rune hiện tại
-			if lastSpace >= lineStart {
-				// cắt tại khoảng trắng gần nhất trong dòng
-				cut = lastSpace + 1
-			}
-			out = append(out, string(runes[lineStart:cut]))
-
-			// bắt đầu dòng mới
-			lineStart = cut
-			col = 0
-			lastSpace = -1
-
-			// bỏ leading spaces ở đầu dòng mới
-			for lineStart < n && (runes[lineStart] == ' ' || runes[lineStart] == '\t') {
-				lineStart++
-			}
-
-			// i lùi về trước rune tiếp theo (for sẽ ++)
-			i = lineStart - 1
-		}
-	}
-
-	// phần còn lại
-	if lineStart < n {
-		out = append(out, string(runes[lineStart:]))
-	}
-	if len(out) == 0 {
-		return []string{""}
-	}
-	return out
-}
-
-// progressRenderer.go (hoặc chỗ bạn đang khai báo progressRenderer)
-type progressRenderer struct {
-    prevRows    int
-    fixedBottom bool
-    rows        int // tổng số dòng terminal
-    panelRows   int // số dòng panel ở đáy
-}
-
-func (r *progressRenderer) setFixedBottom(rows, panelRows int) string {
-    if rows <= 0 { rows = 24 }
-    if panelRows <= 0 { panelRows = 3 }
-    r.fixedBottom = true
-    r.rows = rows
-    r.panelRows = panelRows
-
-    // Đặt scroll region: 1 .. (rows - panelRows)
-    // CSI <top> ; <bottom> r
-    top := 1
-    bottom := rows - panelRows
-    if bottom < top { bottom = rows } // fallback không khóa nếu panelRows quá lớn
-    return fmt.Sprintf("\x1b[%d;%dr", top, bottom)
-}
-
-// Bỏ fixed-bottom mode, trả scroll region về mặc định toàn màn hình
-func (r *progressRenderer) unsetFixedBottom() string {
-    r.fixedBottom = false
-    r.rows = 0
-    r.panelRows = 0
-    r.prevRows = 0
-    return "\x1b[r" // reset scroll region
-}
-
-// Vẽ panel ở đáy màn hình, không “quay lên” bằng CSI A nữa.
-// Giả định: scroll region đã được set với setFixedBottom().
-func (r *progressRenderer) renderFixedBottom(lines []string) string {
-    if len(lines) == 0 {
-        lines = []string{""}
-    }
-    // panel luôn có tối thiểu r.panelRows dòng, phần thừa clear trắng
-    curRows := len(lines)
-    if curRows > r.panelRows {
-        curRows = r.panelRows
-    }
-
-    // Tính toạ độ top của panel
-    rows := r.rows
-    if rows <= 0 { rows, _, _ = term.GetSize(int(os.Stderr.Fd())) }
-    if rows <= 0 { rows = 24 }
-    startRow := rows - r.panelRows + 1
-    if startRow < 1 { startRow = 1 }
-
-    var b strings.Builder
-
-    // TẮT auto-wrap (tránh terminal tự xuống dòng phá panel)
-    b.WriteString("\x1b[?7l")
-
-    // Nhảy tới dòng đầu panel
-    // CSI <row> ; 1 H
-    b.WriteString(fmt.Sprintf("\x1b[%d;1H", startRow))
-
-    // Vẽ đủ r.panelRows dòng: ghi + clear
-    for i := 0; i < r.panelRows; i++ {
-        b.WriteString("\r\x1b[2K") // clear whole line
-        if i < len(lines) {
-            b.WriteString(lines[i])
-        }
-        if i < r.panelRows-1 {
-            b.WriteByte('\n')
-        }
-    }
-
-    // Đưa con trỏ về cuối vùng log (dòng rows - panelRows), cột 1
-    b.WriteString(fmt.Sprintf("\x1b[%d;1H", rows - r.panelRows))
-
-    // BẬT lại auto-wrap
-    b.WriteString("\x1b[?7h")
-
-    r.prevRows = len(lines)
-    return b.String()
-}
-
-// Giữ panel, nhường con trỏ cho log in tiếp ở cuối vùng log.
-// KHÁC trước: không in thêm '\n' thừa, không làm panel biến mất.
-func (r *progressRenderer) keep() string {
-    if !r.fixedBottom || r.rows == 0 || r.panelRows == 0 {
-        // fallback: như cũ, hạ khối nhiều dòng
-        if r.prevRows == 0 { return "" }
-        var b strings.Builder
-        b.WriteString("\r")
-        if r.prevRows > 1 {
-            b.WriteString(fmt.Sprintf("\x1b[%dB", r.prevRows-1))
-        }
-        b.WriteString("\x1b[E")
-        r.prevRows = 0
-        return b.String()
-    }
-    // fixedBottom: chỉ cần đưa con trỏ về cuối vùng log
-    return fmt.Sprintf("\x1b[%d;1H", r.rows - r.panelRows)
-}
-
-// Giữ render cũ làm fallback (khi không bật fixedBottom)
-func (r *progressRenderer) render(lines []string) string {
-    if r.fixedBottom {
-        return r.renderFixedBottom(lines)
-    }
-    // ====== code cũ của bạn (multi-line panel “bay theo con trỏ”) ======
-    if len(lines) == 0 {
-        lines = []string{""}
-    }
-    curRows := len(lines)
-    maxRows := r.prevRows
-    if curRows > maxRows {
-        maxRows = curRows
-    }
-
-    var b strings.Builder
-    b.WriteString("\x1b[?7l") // off wrap
-
-    if r.prevRows > 0 {
-        b.WriteString("\r")
-        if r.prevRows > 1 {
-            b.WriteString(fmt.Sprintf("\x1b[%dA", r.prevRows-1))
-        }
-    }
-    for i := 0; i < maxRows; i++ {
-        b.WriteString("\r\x1b[2K")
-        if i < curRows {
-            b.WriteString(lines[i])
-        }
-        if i < maxRows-1 {
-            b.WriteByte('\n')
-        }
-    }
-    if maxRows > 1 {
-        b.WriteString(fmt.Sprintf("\r\x1b[%dA", maxRows-1))
-    } else {
-        b.WriteString("\r")
-    }
-
-    b.WriteString("\x1b[?7h") // on wrap
-    r.prevRows = curRows
-    return b.String()
-}
-
-
-func (m *CPMonitor) currentLevelN(n int) string {
-    cur := ""
-    m.mu.RLock()
-    for _, v := range m.currentByWID { // lấy 1 cái đầu tiên là đủ
-        cur = v
-        break
-    }
-    m.mu.RUnlock()
-    if cur == "" {
-        return ""
-    }
-    // bỏ scheme, bỏ slash đầu
-    cur = strings.TrimPrefix(cur, "oss://")
-    cur = strings.TrimPrefix(cur, "s3://")
-    cur = strings.TrimLeft(cur, "/")
-    parts := strings.Split(cur, "/")
-    if len(parts) > n {
-        parts = parts[:n]
-    }
-    return strings.Join(parts, "/")
 }
